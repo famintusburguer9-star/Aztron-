@@ -4,13 +4,14 @@ const logger = require("./LoggerService");
 const storage = require("./storage");
 const sentiment = require("./SentimentService");
 const marketCondition = require("./MarketConditionService");
+const memoryService = require("./MemoryService"); // NOVO: MemoryService
 
 class AIZtronLearningService {
   constructor() {
     this.thoughts = storage.get("aiThoughts", []);
     this.sentimentHistory = storage.get("sentimentHistory", []);
-    this.patterns = storage.get("learnedPatterns", []); // NOVO: padrões aprendidos
-    this.tradeHistory = storage.get("tradeHistory", []); // NOVO: histórico de trades
+    this.patterns = storage.get("learnedPatterns", []);
+    this.tradeHistory = storage.get("tradeHistory", []);
     this.version = "v4.3.0";
     this.confidence = 84;
     this.status = "degraded";
@@ -46,7 +47,6 @@ class AIZtronLearningService {
   }
 
   _generateThought() {
-    // Pensamento baseado em aprendizado real se tiver dados
     let message = "";
     
     if (this.patterns.length > 0) {
@@ -59,7 +59,6 @@ class AIZtronLearningService {
         message = `🤔 Analyzing market. ${this.patterns.length} patterns in memory.`;
       }
     } else {
-      // Fallback para o pool original
       message = [
         "Analyzing BTC momentum — RSI recovering from 38. EMA crossover imminent.",
         "ETH showing divergence on MACD histogram. Reducing confidence for long positions.",
@@ -91,12 +90,10 @@ class AIZtronLearningService {
     
     const wasWin = trade.pnl > 0;
     
-    // Atualiza confiança geral
     this.confidence = Math.min(95, Math.max(50, 
       this.confidence + (wasWin ? 0.8 : -0.5)
     ));
     
-    // Salva no histórico
     const historyEntry = {
       id: trade.id,
       symbol: trade.symbol,
@@ -115,7 +112,10 @@ class AIZtronLearningService {
     if (this.tradeHistory.length > 200) this.tradeHistory.pop();
     storage.set("tradeHistory", this.tradeHistory.slice(0, 200));
     
-    // Aprende padrão baseado nas condições
+    // NOVO: Salva no MemoryService também
+    memoryService.rememberTrade(historyEntry);
+    memoryService.recordStrategyPerformance(trade.strategy || "unknown", wasWin, trade.pnl || 0);
+    
     this._learnPattern(trade);
     
     logger.info(`Learned from trade: ${trade.symbol} ${trade.action} ${wasWin ? "WIN" : "LOSS"}`, {
@@ -153,6 +153,17 @@ class AIZtronLearningService {
         lastSeen: new Date().toISOString()
       };
       this.patterns.push(newPattern);
+      
+      // NOVO: Salva padrão no MemoryService se for promissor
+      if (newPattern.winRate > 60) {
+        memoryService.savePattern({
+          name: newPattern.name,
+          key: newPattern.key,
+          winRate: newPattern.winRate,
+          symbol: conditions.symbol,
+          regime: conditions.regime
+        });
+      }
     }
     
     if (this.patterns.length > 50) {
@@ -193,7 +204,20 @@ class AIZtronLearningService {
     };
     
     const patternKey = this._createPatternKey(conditions);
-    const pattern = this.patterns.find(p => p.key === patternKey);
+    let pattern = this.patterns.find(p => p.key === patternKey);
+    
+    // NOVO: Se não achou padrão local, tenta no MemoryService
+    if (!pattern) {
+      const memoryPattern = memoryService.findSimilarPattern(conditions);
+      if (memoryPattern) {
+        pattern = {
+          name: memoryPattern.name,
+          totalTrades: memoryPattern.trades || 10,
+          winRate: memoryPattern.winRate
+        };
+        logger.debug(`Using memory pattern: ${pattern.name}`, { service: "AILearning" });
+      }
+    }
     
     if (pattern && pattern.totalTrades >= 5) {
       const confidenceAdjustment = (pattern.winRate - 50) / 2;
@@ -207,6 +231,18 @@ class AIZtronLearningService {
         patternUsed: pattern.name,
         basedOnTrades: pattern.totalTrades,
         recommendation: pattern.winRate > 60 ? "FOLLOW" : "SKIP"
+      };
+    }
+    
+    // NOVO: Pega melhor estratégia do MemoryService como fallback
+    const bestStrategy = memoryService.getBestStrategy();
+    if (bestStrategy && bestStrategy.winRate > 55) {
+      return {
+        predictedWinRate: bestStrategy.winRate,
+        confidence: Math.min(85, signal.confidence || 70),
+        patternUsed: `best_strategy_${bestStrategy.name}`,
+        basedOnTrades: bestStrategy.totalTrades,
+        recommendation: bestStrategy.winRate > 60 ? "FOLLOW" : "CAUTIOUS"
       };
     }
     
@@ -228,6 +264,9 @@ class AIZtronLearningService {
       .filter(p => p.totalTrades >= 5)
       .sort((a, b) => b.winRate - a.winRate)[0];
     
+    // NOVO: Adiciona estatísticas do MemoryService
+    const memoryStats = memoryService.getStats ? memoryService.getStats() : {};
+    
     return {
       totalTrades: totalTrades,
       wins: wins,
@@ -240,7 +279,8 @@ class AIZtronLearningService {
         winRate: bestPattern.winRate,
         trades: bestPattern.totalTrades
       } : null,
-      currentConfidence: Math.round(this.confidence)
+      currentConfidence: Math.round(this.confidence),
+      memoryStats: memoryStats
     };
   }
 
@@ -250,7 +290,7 @@ class AIZtronLearningService {
       .slice(0, limit);
   }
 
-  // ─── SENTIMENT ANALYSIS METHODS (seus originais) ────────────────────────────
+  // ─── SENTIMENT ANALYSIS METHODS ────────────────────────────────────────────
   
   async getTrendAnalysis(symbol) {
     try {
