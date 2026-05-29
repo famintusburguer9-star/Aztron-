@@ -8,6 +8,7 @@ class DatabaseService {
     this.alerts = storage.get("alerts", []);
     this.config = storage.get("config", this._defaultConfig());
     this.deployHistory = storage.get("deployHistory", this._defaultDeploys());
+    this.memory = storage.get("memory", { patterns: [], strategies: [], tradeMemory: [] }); // NOVO: memória da IA
     logger.info("DatabaseService initialized", { service: "DatabaseService" });
   }
 
@@ -36,6 +37,21 @@ class DatabaseService {
   saveAlerts() { storage.set("alerts", this.alerts); }
   saveConfig() { storage.set("config", this.config); }
   saveDeployHistory() { storage.set("deployHistory", this.deployHistory); }
+  
+  // NOVO: Métodos para memória da IA
+  saveMemory() { 
+    storage.set("memory", this.memory); 
+  }
+  
+  getMemory() { 
+    return this.memory; 
+  }
+  
+  updateMemory(data) {
+    this.memory = { ...this.memory, ...data };
+    this.saveMemory();
+    return this.memory;
+  }
 
   addTrade(trade) { this.trades.unshift(trade); if (this.trades.length > 500) this.trades.length = 500; this.saveTrades(); }
   addSignal(signal) { this.signals.unshift(signal); if (this.signals.length > 200) this.signals.length = 200; this.saveSignals(); }
