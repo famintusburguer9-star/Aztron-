@@ -422,4 +422,36 @@ io.on("connection", (socket) => {
   eventBus.on("signal", signalHandler);
   eventBus.on("trade", tradeHandler);
   eventBus.on("thought", thoughtHandler);
-  eventBus.on("alert", 
+  eventBus.on("alert", alertHandler);
+  eventBus.on("engine:status", engineHandler);
+  eventBus.on("optimizer:progress", optimizerHandler);
+  eventBus.on("optimizer:complete", optimizerCompleteHandler);
+  eventBus.on("sentiment:scan:complete", sentimentScanHandler);
+
+  socket.on("disconnect", () => {
+    eventBus.off("tick", tickHandler);
+    eventBus.off("signal", signalHandler);
+    eventBus.off("trade", tradeHandler);
+    eventBus.off("thought", thoughtHandler);
+    eventBus.off("alert", alertHandler);
+    eventBus.off("engine:status", engineHandler);
+    eventBus.off("optimizer:progress", optimizerHandler);
+    eventBus.off("optimizer:complete", optimizerCompleteHandler);
+    eventBus.off("sentiment:scan:complete", sentimentScanHandler);
+    logger.info(`WebSocket disconnected: ${socket.id}`, { service: "WebSocket" });
+  });
+});
+
+// ─── Startup ──────────────────────────────────────────────────────────────────
+async function main() {
+  await orchestrator.init();
+  await orchestrator.start();
+
+  server.listen(PORT, "0.0.0.0", () => {
+    logger.info(`AZTRON Backend running on port ${PORT}`, { service: "Orchestrator" });
+    logger.info(`REST API: http://0.0.0.0:${PORT}/api`, { service: "Orchestrator" });
+    logger.info(`WebSocket: ws://0.0.0.0:${PORT}`, { service: "Orchestrator" });
+  });
+}
+
+main().catch(err => { logger.error(`Fatal startup error: ${err.message}`); process.exit(1); });
