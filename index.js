@@ -31,6 +31,7 @@ const spread = require("./SpreadAnalyzerService");
 const account = require("./AccountManagerService");
 const goals = require("./GoalTrackerService");
 const multiStrategy = require("./MultiStrategyService");
+const memoryService = require("./MemoryService"); // NOVO: MemoryService
 
 const PORT = process.env.PORT || 3001;
 const app = express();
@@ -52,7 +53,7 @@ app.use((req, _res, next) => {
 
 // ─── Health ───────────────────────────────────────────────────────────────────
 app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", version: "v4.2.1", timestamp: new Date().toISOString() });
+  res.json({ status: "ok", version: "v4.3.0", timestamp: new Date().toISOString() });
 });
 
 // ─── Engine ───────────────────────────────────────────────────────────────────
@@ -100,6 +101,9 @@ app.get("/api/ai/thoughts", (req, res) => res.json(aiLearning.getThoughts(parseI
 app.get("/api/ai/learning-history", (_req, res) => res.json(aiLearning.getLearningHistory()));
 app.get("/api/ai/patterns", (req, res) => res.json(deepPattern.getPatterns(parseInt(req.query.limit) || 10)));
 app.get("/api/ai/sentiment", (_req, res) => res.json(sentiment.getSentiment()));
+
+// ─── NOVA ROTA: Memory stats ───────────────────────────────────────────────────
+app.get("/api/memory/stats", (_req, res) => res.json(memoryService.getStats()));
 
 // ─── SENTIMENT (rota básica) ──────────────────────────────────────────────────
 app.get("/api/sentiment", (_req, res) => res.json(sentiment.getSentiment()));
@@ -444,6 +448,10 @@ io.on("connection", (socket) => {
 
 // ─── Startup ──────────────────────────────────────────────────────────────────
 async function main() {
+  // Injeta o database no memoryService
+  memoryService.setDatabase(db);
+  await memoryService.start();
+  
   await orchestrator.init();
   await orchestrator.start();
 
