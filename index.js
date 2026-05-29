@@ -101,6 +101,9 @@ app.get("/api/ai/learning-history", (_req, res) => res.json(aiLearning.getLearni
 app.get("/api/ai/patterns", (req, res) => res.json(deepPattern.getPatterns(parseInt(req.query.limit) || 10)));
 app.get("/api/ai/sentiment", (_req, res) => res.json(sentiment.getSentiment()));
 
+// ─── SENTIMENT (rota adicional para compatibilidade) ──────────────────────────
+app.get("/api/sentiment", (_req, res) => res.json(sentiment.getSentiment()));
+
 // ─── AI Optimizer ─────────────────────────────────────────────────────────────
 app.post("/api/ai/optimize/start", (_req, res) => res.json(aiOptimizer.start()));
 app.get("/api/ai/optimize/status", (_req, res) => res.json(aiOptimizer.getStatus()));
@@ -193,7 +196,6 @@ app.post("/api/admin/mode/set", (req, res) => {
 
 // ─── Slippage ────────────────────────────────────────────────────────────────
 app.get("/api/slippage/:symbol", (req, res) => {
-  const { qty } = req.query;
   res.json(slippage.getSymbolSlippage(req.params.symbol));
 });
 
