@@ -57,11 +57,42 @@ class ObservabilityService {
   }
 
   getServices() {
-    return SERVICES_LIST.map((name, i) => ({
-      name,
-      status: i === 7 ? "Degraded" : i === 10 ? "Down" : "Healthy",
-      uptime: "100%",
-    }));
+    // Importa os serviços para verificar status real
+    let aiRealStatus = "Healthy";
+    let sentimentRealStatus = "Healthy";
+    
+    try {
+      const aiLearning = require("./AIZtronLearningService");
+      const aiStatus = aiLearning.getStatus();
+      aiRealStatus = aiStatus.status === "healthy" ? "Healthy" : 
+                     aiStatus.status === "degraded" ? "Degraded" : "Down";
+    } catch (e) {
+      aiRealStatus = "Degraded";
+    }
+    
+    try {
+      const sentiment = require("./SentimentService");
+      const sentimentStatus = sentiment.getSentiment();
+      if (sentimentStatus && sentimentStatus.fearGreedIndex) {
+        sentimentRealStatus = "Healthy";
+      } else {
+        sentimentRealStatus = "Degraded";
+      }
+    } catch (e) {
+      sentimentRealStatus = "Down";
+    }
+    
+    return SERVICES_LIST.map((name) => {
+      let status = "Healthy";
+      
+      if (name === "AIZtronLearningService") {
+        status = aiRealStatus;
+      } else if (name === "SentimentService") {
+        status = sentimentRealStatus;
+      }
+      
+      return { name, status, uptime: "100%" };
+    });
   }
 
   getLogs(limit = 30) { return logger.getLogs(limit); }
