@@ -31,7 +31,9 @@ const spread = require("./SpreadAnalyzerService");
 const account = require("./AccountManagerService");
 const goals = require("./GoalTrackerService");
 const multiStrategy = require("./MultiStrategyService");
-const memoryService = require("./MemoryService"); // NOVO: MemoryService
+const memoryService = require("./MemoryService");
+const marketConsciousness = require("./MarketConsciousnessService");
+const tokenomics = require("./TokenomicsService");
 
 const PORT = process.env.PORT || 3001;
 const app = express();
@@ -53,7 +55,7 @@ app.use((req, _res, next) => {
 
 // ─── Health ───────────────────────────────────────────────────────────────────
 app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", version: "v4.3.0", timestamp: new Date().toISOString() });
+  res.json({ status: "ok", version: "v5.0.0", timestamp: new Date().toISOString() });
 });
 
 // ─── Engine ───────────────────────────────────────────────────────────────────
@@ -102,7 +104,7 @@ app.get("/api/ai/learning-history", (_req, res) => res.json(aiLearning.getLearni
 app.get("/api/ai/patterns", (req, res) => res.json(deepPattern.getPatterns(parseInt(req.query.limit) || 10)));
 app.get("/api/ai/sentiment", (_req, res) => res.json(sentiment.getSentiment()));
 
-// ─── NOVA ROTA: Memory stats ───────────────────────────────────────────────────
+// ─── Memory stats ─────────────────────────────────────────────────────────────
 app.get("/api/memory/stats", (_req, res) => res.json(memoryService.getStats()));
 
 // ─── SENTIMENT (rota básica) ──────────────────────────────────────────────────
@@ -113,35 +115,29 @@ app.get("/api/sentiment/analysis", async (req, res) => {
   const { symbol = "BTC" } = req.query;
   
   try {
-    // Tenta pegar análise avançada do AIZtronLearningService
     const aiStatus = aiLearning.getStatus();
     
     if (aiStatus.status === "healthy" || aiStatus.status === "degraded") {
-      // Se a IA estiver pelo menos rodando, tenta análise real
       const analysis = await aiLearning.getTrendAnalysis(symbol);
       if (analysis) {
         return res.json(analysis);
       }
     }
     
-    // Fallback: usa dados do sentiment service + market data
     const sentimentData = sentiment.getSentiment();
     const marketConditionData = marketCondition.getCondition(symbol);
     
-    // Calcula sentimento baseado no Fear & Greed + dados de mercado
     const fgIndex = sentimentData.fearGreedIndex || 50;
     const fgLabel = sentimentData.fearGreedLabel || "NEUTRAL";
     const overallSentiment = fgIndex >= 55 ? "positive" : fgIndex <= 45 ? "negative" : "neutral";
     const sentimentScore = fgIndex;
     
-    // Distribuição aproximada baseada no Fear & Greed
     let positivePct = 33, negativePct = 33, neutralPct = 34;
     if (fgIndex >= 70) { positivePct = 70; negativePct = 10; neutralPct = 20; }
     else if (fgIndex >= 55) { positivePct = 55; negativePct = 20; neutralPct = 25; }
     else if (fgIndex <= 30) { positivePct = 10; negativePct = 70; neutralPct = 20; }
     else if (fgIndex <= 45) { positivePct = 20; negativePct = 55; neutralPct = 25; }
     
-    // Recomendação baseada no sentimento
     let recommendation = "HOLD";
     let recommendationReason = "Market sentiment is neutral. Waiting for clearer signals.";
     
@@ -159,7 +155,6 @@ app.get("/api/sentiment/analysis", async (req, res) => {
       recommendationReason = `Fear sentiment (${fgIndex} - ${fgLabel}). Accumulation zone possible.`;
     }
     
-    // Força da trend baseada na volatilidade
     let trendStrength = "moderate";
     if (marketConditionData && marketConditionData.volatility) {
       const vol = marketConditionData.volatility;
@@ -167,10 +162,8 @@ app.get("/api/sentiment/analysis", async (req, res) => {
       else if (vol < 0.5) trendStrength = "weak";
     }
     
-    // Calcula confiança da IA
     const confidence = Math.min(85, Math.max(40, 100 - Math.abs(50 - fgIndex)));
     
-    // Simulated return baseado no sentimento histórico
     let simulatedReturn = 1.8;
     if (fgIndex >= 75) simulatedReturn = -3.2;
     else if (fgIndex >= 60) simulatedReturn = -1.5;
@@ -239,11 +232,8 @@ app.post("/api/sentiment/scan", async (req, res) => {
   
   try {
     logger.info(`Scanning sentiment for ${symbol}`, { service: "SentimentScan" });
-    
-    // Dispara evento para o AIZtronLearningService processar
     eventBus.emit("sentiment:scan", { symbol, timestamp: new Date().toISOString() });
     
-    // Se tiver o serviço de sentiment avançado, ativa coleta
     if (aiLearning && typeof aiLearning.scanSocialSentiment === 'function') {
       await aiLearning.scanSocialSentiment(symbol);
     }
@@ -265,14 +255,12 @@ app.get("/api/sentiment/posts", async (req, res) => {
   const { symbol, limit = 20 } = req.query;
   
   try {
-    // Tenta buscar posts reais do serviço de sentiment
     let posts = [];
     
     if (aiLearning && typeof aiLearning.getRecentPosts === 'function') {
       posts = await aiLearning.getRecentPosts(symbol, parseInt(limit));
     }
     
-    // Se não tiver posts reais, retorna dados baseados no sentiment
     if (!posts || posts.length === 0) {
       const sentimentData = sentiment.getSentiment();
       const fgIndex = sentimentData.fearGreedIndex || 50;
@@ -405,6 +393,35 @@ app.get("/api/slippage/:symbol", (req, res) => {
   res.json(slippage.getSymbolSlippage(req.params.symbol));
 });
 
+// ─── Market Consciousness Service ─────────────────────────────────────────────
+app.get("/api/consciousness/status", (_req, res) => res.json(marketConsciousness.getConsciousnessStatus()));
+app.get("/api/consciousness/report", (_req, res) => res.json(marketConsciousness.getReport()));
+app.post("/api/consciousness/pause", (_req, res) => res.json(marketConsciousness.pauseTrading("Manual via API")));
+app.post("/api/consciousness/resume", (_req, res) => res.json(marketConsciousness.resumeTrading()));
+app.get("/api/consciousness/memecoin/all", (_req, res) => res.json(marketConsciousness.getMemecoinsAll()));
+app.get("/api/consciousness/memecoin/:symbol", (req, res) => res.json(marketConsciousness.analyzeMemecoin(req.params.symbol)));
+app.get("/api/consciousness/memecoin/hype", (_req, res) => res.json(marketConsciousness.getMemecoinsHype()));
+app.get("/api/consciousness/alerts", (_req, res) => res.json(marketConsciousness.getHypeAlerts()));
+app.get("/api/consciousness/weekly", (_req, res) => res.json(marketConsciousness.getWeeklyPerformance()));
+
+// ─── Tokenomics Service ($AZTRON Token) ───────────────────────────────────────
+app.get("/api/tokenomics/stats", (_req, res) => res.json(tokenomics.getTokenStats()));
+app.post("/api/tokenomics/burn", (req, res) => {
+  const { amount } = req.body;
+  res.json(tokenomics.burnTokens(amount || 10000));
+});
+app.post("/api/tokenomics/mint", (req, res) => {
+  const { amount, to } = req.body;
+  res.json(tokenomics.mintTokens(amount || 0, to || "system"));
+});
+app.get("/api/tokenomics/holders", (_req, res) => res.json(tokenomics.getHolders()));
+app.get("/api/tokenomics/rewards", (_req, res) => res.json(tokenomics.getPendingRewards()));
+app.post("/api/tokenomics/reward", (req, res) => {
+  const { userId, amount, reason } = req.body;
+  res.json(tokenomics.rewardUser(userId, amount || 100, reason || "trade_win"));
+});
+app.get("/api/tokenomics/roadmap", (_req, res) => res.json(tokenomics.getRoadmap()));
+
 // ─── WebSocket ────────────────────────────────────────────────────────────────
 io.on("connection", (socket) => {
   logger.info(`WebSocket connected: ${socket.id}`, { service: "WebSocket" });
@@ -448,9 +465,11 @@ io.on("connection", (socket) => {
 
 // ─── Startup ──────────────────────────────────────────────────────────────────
 async function main() {
-  // Injeta o database no memoryService
   memoryService.setDatabase(db);
   await memoryService.start();
+  
+  await marketConsciousness.start?.();
+  await tokenomics.start?.();
   
   await orchestrator.init();
   await orchestrator.start();
