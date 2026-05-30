@@ -71,7 +71,7 @@ class SentimentService {
         return;
       }
       
-      throw new Error(`Unknown API response format: ${JSON.stringify(data)}`);
+      throw new Error(`Unknown API response format`);
       
     } catch (error) {
       logger.warn(`Fear & Greed API failed (${error.message}), using simulated`, { service: "Sentiment" });
