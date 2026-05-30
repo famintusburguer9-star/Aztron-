@@ -1,5 +1,6 @@
 const eventBus = require("./EventBus");
 const logger = require("./LoggerService");
+const aiLearning = require("./AIZtronLearningService");
 
 // ─── Memecoin watchlist ───────────────────────────────────────────────────────
 const MEMECOINS = ["DOGEUSDT", "SHIBUSDT", "PEPEUSDT", "BONKUSDT", "WIFUSDT"];
@@ -33,6 +34,11 @@ class MarketConsciousnessService {
     this._initMemecoins();
   }
 
+  async start() {
+    logger.info("MarketConsciousnessService started", { service: "MarketConsciousness" });
+    return { success: true };
+  }
+
   // ─── Volume helpers ─────────────────────────────────────────────────────────
 
   _get7DayAvgVolume(sym) {
@@ -43,8 +49,7 @@ class MarketConsciousnessService {
 
   _simulateCurrentVolume(sym) {
     const avg = this._get7DayAvgVolume(sym);
-    // Random ±50% normally, but occasionally 200-400% spike
-    const spike = Math.random() < 0.12; // 12% chance of spike
+    const spike = Math.random() < 0.12;
     const mult = spike ? 2.0 + Math.random() * 2 : 0.5 + Math.random();
     return avg * mult;
   }
@@ -56,7 +61,6 @@ class MarketConsciousnessService {
       const sentiment = require("./SentimentService");
       const base = sentiment.getSentiment();
       const fgi = base.fearGreedIndex ?? 50;
-      // Memecoins amplify market sentiment
       if (fgi > 70) return "positive";
       if (fgi < 35) return "negative";
       return Math.random() > 0.4 ? "positive" : "neutral";
@@ -70,7 +74,6 @@ class MarketConsciousnessService {
   _analyzeViralTrend(sym) {
     const meta = MEMECOIN_META[sym];
     if (!meta) return { trending: false, growthRate: 0, topHashtag: "" };
-    // Simulate mention growth (realistic: most not trending, occasional viral)
     const growthRate = Math.random() < 0.15 ? Math.random() * 300 + 100 : Math.random() * 60 - 10;
     const trending = growthRate > 80;
     const topHashtag = meta.hashtags[Math.floor(Math.random() * meta.hashtags.length)];
@@ -87,21 +90,21 @@ class MarketConsciousnessService {
 
   _calcHypeScore(volChange, viralGrowth, sentiment, priceChange) {
     let score = 30;
-    // Volume contribution (max 40 pts)
     if (volChange > 200) score += 40;
     else if (volChange > 100) score += 25;
     else if (volChange > 50) score += 12;
-    // Viral contribution (max 20 pts)
+    
     if (viralGrowth > 200) score += 20;
     else if (viralGrowth > 80) score += 12;
     else if (viralGrowth > 30) score += 5;
-    // Sentiment (max 15 pts)
+    
     if (sentiment === "positive") score += 15;
     else if (sentiment === "negative") score -= 10;
-    // Price action (max 15 pts)
+    
     if (priceChange > 15) score += 15;
     else if (priceChange > 5) score += 8;
     else if (priceChange < -10) score -= 8;
+    
     return Math.min(100, Math.max(0, +score.toFixed(1)));
   }
 
@@ -157,7 +160,6 @@ class MarketConsciousnessService {
       const fresh = this._buildCoinAnalysis(sym);
       this._memecoins[sym] = fresh;
 
-      // Fire alert if hype crossed 70 threshold
       if (fresh.hypeScore > 70 && (!prev || prev.hypeScore <= 70)) {
         const alert = {
           id: `hype_${sym}_${Date.now()}`,
@@ -180,59 +182,75 @@ class MarketConsciousnessService {
     return alerts;
   }
 
-  // ─── Weekly report ───────────────────────────────────────────────────────────
+  // ─── Weekly report (integrado com AIZtronLearningService) ────────────────────
 
-  _buildWeeklyReport(db) {
-    const trades = typeof db.getTrades === "function" ? db.getTrades({ limit: 500 }) : [];
-    const now = Date.now();
-    const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
-    const twoWeeksAgo = now - 14 * 24 * 60 * 60 * 1000;
-
-    const thisWeek = trades.filter(t => new Date(t.timestamp).getTime() > weekAgo && t.status === "CLOSED");
-    const lastWeek = trades.filter(t => {
-      const ts = new Date(t.timestamp).getTime();
-      return ts > twoWeeksAgo && ts <= weekAgo && t.status === "CLOSED";
-    });
-
-    const calcStats = (list) => {
-      if (!list.length) return { winRate: 0, maxDrawdown: 0, byStrategy: {}, totalPnl: 0, count: 0 };
-      const wins = list.filter(t => (t.pnl ?? 0) > 0).length;
-      const winRate = (wins / list.length) * 100;
-      const pnls = list.map(t => t.pnl ?? 0);
-      const totalPnl = pnls.reduce((a, b) => a + b, 0);
-      let peak = 0, dd = 0, balance = 0;
-      pnls.forEach(p => {
-        balance += p;
+  _buildWeeklyReport() {
+    try {
+      const db = require("./DatabaseService");
+      
+      // Busca dados reais da IA
+      const aiStats = aiLearning.getLearningStats();
+      const aiStatus = aiLearning.getStatus();
+      
+      const winRate = aiStats?.overallWinRate || 0;
+      const totalTrades = aiStats?.totalTrades || 0;
+      const patternsCount = aiStats?.patternsLearned || 0;
+      const aiConfidence = aiStats?.currentConfidence || 0;
+      
+      // Busca trades do Database para drawdown e PnL
+      const trades = db.getTrades({ limit: 200, status: "CLOSED" });
+      let maxDrawdown = 0;
+      let peak = 0;
+      let balance = 0;
+      let totalPnl = 0;
+      
+      trades.forEach(t => {
+        const pnl = t.pnl || 0;
+        totalPnl += pnl;
+        balance += pnl;
         if (balance > peak) peak = balance;
-        const cur = peak > 0 ? ((peak - balance) / peak) * 100 : 0;
-        if (cur > dd) dd = cur;
+        const dd = peak > 0 ? ((peak - balance) / peak) * 100 : 0;
+        if (dd > maxDrawdown) maxDrawdown = dd;
       });
-      const byStrategy = {};
-      list.forEach(t => {
-        const s = t.strategy || "Unknown";
-        if (!byStrategy[s]) byStrategy[s] = { wins: 0, total: 0 };
-        byStrategy[s].total++;
-        if ((t.pnl ?? 0) > 0) byStrategy[s].wins++;
-      });
-      return { winRate: +winRate.toFixed(1), maxDrawdown: +dd.toFixed(2), byStrategy, totalPnl: +totalPnl.toFixed(2), count: list.length };
-    };
-
-    const cur  = calcStats(thisWeek);
-    const prev = calcStats(lastWeek);
-    const gradeFor = (wr) => wr >= 70 ? "A" : wr >= 60 ? "B" : wr >= 50 ? "C" : wr >= 40 ? "D" : "F";
-    const bestStrategy = Object.entries(cur.byStrategy)
-      .sort((a, b) => (b[1].wins / Math.max(b[1].total, 1)) - (a[1].wins / Math.max(a[1].total, 1)))[0]?.[0] || "N/A";
-    const vsLastWeek = cur.winRate - prev.winRate;
-    const grade = gradeFor(cur.winRate);
-    const weAreGood = cur.winRate >= 55 && cur.maxDrawdown < 8;
-
-    return {
-      weeklyWinRate: cur.winRate, maxDrawdown: cur.maxDrawdown, totalPnl: cur.totalPnl,
-      totalTrades: cur.count, byStrategy: cur.byStrategy, bestStrategy, grade,
-      vsLastWeek: +vsLastWeek.toFixed(1), improved: vsLastWeek > 0, weAreGood,
-      aiVerdict: weAreGood ? "SIM ✅" : "NÃO ⚠️",
-      generatedAt: new Date().toISOString(),
-    };
+      
+      const grade = winRate >= 70 ? "A" : winRate >= 60 ? "B" : winRate >= 50 ? "C" : winRate >= 40 ? "D" : "F";
+      const weAreGood = winRate >= 55 && maxDrawdown < 8;
+      
+      logger.info(`[Consciousness] Report: WR=${winRate}%, DD=${maxDrawdown.toFixed(2)}%, Grade=${grade}, Good=${weAreGood}`, { service: "MarketConsciousness" });
+      
+      return {
+        weeklyWinRate: winRate,
+        maxDrawdown: +maxDrawdown.toFixed(2),
+        totalPnl: +totalPnl.toFixed(2),
+        totalTrades: totalTrades,
+        patternsLearned: patternsCount,
+        aiConfidence: aiConfidence,
+        bestStrategy: "AI Learning",
+        grade: grade,
+        vsLastWeek: 0,
+        improved: false,
+        weAreGood: weAreGood,
+        aiVerdict: weAreGood ? "SIM ✅" : "NÃO ⚠️",
+        generatedAt: new Date().toISOString(),
+      };
+    } catch (error) {
+      logger.error(`[Consciousness] Error building report: ${error.message}`, { service: "MarketConsciousness" });
+      return {
+        weeklyWinRate: 0,
+        maxDrawdown: 0,
+        totalPnl: 0,
+        totalTrades: 0,
+        patternsLearned: 0,
+        aiConfidence: 0,
+        bestStrategy: "N/A",
+        grade: "N/A",
+        vsLastWeek: 0,
+        improved: false,
+        weAreGood: false,
+        aiVerdict: "N/A",
+        generatedAt: new Date().toISOString(),
+      };
+    }
   }
 
   _maybeAutoEvaluate() {
@@ -245,8 +263,7 @@ class MarketConsciousnessService {
 
   _autoEvaluate() {
     try {
-      const db = require("./DatabaseService");
-      this._weeklyReport = this._buildWeeklyReport(db);
+      this._weeklyReport = this._buildWeeklyReport();
       const { weeklyWinRate, maxDrawdown } = this._weeklyReport;
 
       if ((weeklyWinRate < 45 || maxDrawdown > 8) && this._mode === "OPERATING") {
@@ -271,23 +288,22 @@ class MarketConsciousnessService {
 
   getConsciousnessStatus() {
     return {
-      mode: this._mode, manuallyPaused: this._manuallyPaused,
-      pauseReason: this._pauseReason, studyStarted: this._studyStarted,
+      mode: this._mode,
+      manuallyPaused: this._manuallyPaused,
+      pauseReason: this._pauseReason,
+      studyStarted: this._studyStarted,
       lastCheck: this._lastCheck ? new Date(this._lastCheck).toISOString() : null,
-      isOperating: this._mode === "OPERATING", isStudying: this._mode === "STUDY", isPaused: this._mode === "PAUSED",
+      isOperating: this._mode === "OPERATING",
+      isStudying: this._mode === "STUDY",
+      isPaused: this._mode === "PAUSED",
     };
   }
 
   getWeeklyPerformance() {
     if (!this._weeklyReport) {
-      try { const db = require("./DatabaseService"); this._weeklyReport = this._buildWeeklyReport(db); } catch {}
+      this._weeklyReport = this._buildWeeklyReport();
     }
-    return this._weeklyReport || {
-      weeklyWinRate: 0, maxDrawdown: 0, totalPnl: 0, totalTrades: 0,
-      byStrategy: {}, bestStrategy: "N/A", grade: "N/A",
-      vsLastWeek: 0, improved: false, weAreGood: false, aiVerdict: "N/A",
-      generatedAt: new Date().toISOString(),
-    };
+    return this._weeklyReport;
   }
 
   getReport() {
@@ -301,14 +317,18 @@ class MarketConsciousnessService {
   }
 
   pauseTrading(reason = "Manual") {
-    this._mode = "PAUSED"; this._manuallyPaused = true; this._pauseReason = reason;
+    this._mode = "PAUSED";
+    this._manuallyPaused = true;
+    this._pauseReason = reason;
     logger.warn(`[Consciousness] PAUSADO — ${reason}`, { service: "MarketConsciousness" });
     eventBus.emit("alert", { id: `cs_${Date.now()}`, type: "WARNING", message: `Operações pausadas: ${reason}`, timestamp: new Date().toISOString(), read: false });
     return { success: true, mode: this._mode, reason };
   }
 
   resumeTrading() {
-    this._mode = "OPERATING"; this._manuallyPaused = false; this._pauseReason = null;
+    this._mode = "OPERATING";
+    this._manuallyPaused = false;
+    this._pauseReason = null;
     logger.info(`[Consciousness] RETOMADO`, { service: "MarketConsciousness" });
     eventBus.emit("alert", { id: `cs_${Date.now()}`, type: "INFO", message: "Operações retomadas manualmente", timestamp: new Date().toISOString(), read: false });
     return { success: true, mode: this._mode };
@@ -330,7 +350,6 @@ class MarketConsciousnessService {
     return Object.values(this._memecoins).sort((a, b) => b.hypeScore - a.hypeScore);
   }
 
-  /** Returns memecoins currently in hype state (score > 70) sorted by score */
   getMemecoinsHype() {
     this._updateMemecoins();
     return Object.values(this._memecoins)
