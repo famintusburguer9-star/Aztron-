@@ -51,17 +51,17 @@ class SentimentService {
       let value = null;
       let classification = null;
       
-      // Verifica formato português (dados/valor/classificação_de_valor)
+      // CORREÇÃO: Verifica formato português (dados/valor/classificação_de_valor)
       if (data.dados && data.dados[0]) {
         value = parseInt(data.dados[0].valor);
         const rawClassification = data.dados[0].classificação_de_valor;
         classification = this._translateClassification(rawClassification);
         logger.debug(`API Portuguese: value=${value}, raw=${rawClassification} -> ${classification}`, { service: "Sentiment" });
       }
-      // Verifica formato inglês (data/value/classification)
+      // Verifica formato inglês (data/value/value_classification)
       else if (data.data && data.data[0]) {
         value = parseInt(data.data[0].value);
-        classification = data.data[0].classification.toUpperCase();
+        classification = data.data[0].value_classification.toUpperCase();
         logger.debug(`API English: value=${value}, classification=${classification}`, { service: "Sentiment" });
       }
       
