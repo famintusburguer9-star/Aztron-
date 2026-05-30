@@ -54,14 +54,15 @@ class SentimentService {
       // Verifica formato português (dados/valor/classificação_de_valor)
       if (data.dados && data.dados[0]) {
         value = parseInt(data.dados[0].valor);
-        classification = this._translateClassification(data.dados[0].classificação_de_valor);
-        logger.debug("API responded in Portuguese format", { service: "Sentiment" });
+        const rawClassification = data.dados[0].classificação_de_valor;
+        classification = this._translateClassification(rawClassification);
+        logger.debug(`API Portuguese: value=${value}, raw=${rawClassification} -> ${classification}`, { service: "Sentiment" });
       }
       // Verifica formato inglês (data/value/classification)
       else if (data.data && data.data[0]) {
         value = parseInt(data.data[0].value);
         classification = data.data[0].classification.toUpperCase();
-        logger.debug("API responded in English format", { service: "Sentiment" });
+        logger.debug(`API English: value=${value}, classification=${classification}`, { service: "Sentiment" });
       }
       
       if (value && !isNaN(value) && classification) {
@@ -71,7 +72,7 @@ class SentimentService {
         return;
       }
       
-      throw new Error(`Unknown API response format`);
+      throw new Error(`Unknown API response format: ${JSON.stringify(data)}`);
       
     } catch (error) {
       logger.warn(`Fear & Greed API failed (${error.message}), using simulated`, { service: "Sentiment" });
@@ -96,6 +97,8 @@ class SentimentService {
     }
     
     try {
+      // Aqui vai a integração real com Twitter API v2
+      // Por enquanto simula
       logger.info(`Fetching Twitter sentiment for ${symbol}`, { service: "Sentiment" });
       return {
         posts: [],
@@ -115,6 +118,8 @@ class SentimentService {
     }
     
     try {
+      // Aqui vai a integração real com Reddit API
+      // Por enquanto simula
       logger.info(`Fetching Reddit sentiment for ${symbol}`, { service: "Sentiment" });
       return {
         posts: [],
@@ -129,6 +134,7 @@ class SentimentService {
 
   async getTrendAnalysis(symbol) {
     try {
+      // Tenta buscar dados reais se tiver chaves
       let twitterData = null;
       let redditData = null;
       
@@ -140,7 +146,9 @@ class SentimentService {
         redditData = await this._fetchRedditSentiment(symbol);
       }
       
+      // Se tiver dados reais, usa eles
       const hasRealSocialData = (twitterData && twitterData.postCount > 0) || (redditData && redditData.postCount > 0);
+      
       const totalPosts = (twitterData?.postCount || 0) + (redditData?.postCount || 0);
       const redditPosts = redditData?.postCount || Math.floor(Math.random() * 800) + 200;
       const twitterPosts = twitterData?.postCount || Math.floor(Math.random() * 600) + 150;
