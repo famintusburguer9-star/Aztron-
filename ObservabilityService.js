@@ -11,7 +11,9 @@ const SERVICES_LIST = [
   "MarketConditionService", "AccountManagerService", "GoalTrackerService",
   "MultiStrategyService", "StrategyService", "RsiStrategy", "MacdStrategy",
   "BreakoutStrategy", "SlippageEstimatorService", "SpreadAnalyzerService",
-  "LoggerService", "BacktestAIService",
+  "LoggerService", "BacktestAIService", "MemoryService",
+  "MarketConsciousnessService",
+  "TokenomicsService",
 ];
 
 class ObservabilityService {
