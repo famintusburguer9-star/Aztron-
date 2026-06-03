@@ -8,15 +8,36 @@ const logger = require("./LoggerService");
 class TradeExecutorService {
   constructor() {
     this.running = false;
-    this.paused = false;  // NOVO: para pausar trades
+    this.paused = false;
     this.openTrades = db.getTrades({ status: "OPEN" });
+    
+    // 🔥 LISTENER DE SINAIS - EXECUTA TRADES AUTOMATICAMENTE
+    eventBus.on("signal", async (signal) => {
+      if (!this.running || this.paused) return;
+      if (signal.status !== "ACTIVE") return;
+      
+      logger.info(`📡 Signal received: ${signal.type} ${signal.symbol} (conf: ${signal.confidence}%)`, { service: "TradeExecutor" });
+      
+      const result = await this.executeTrade({
+        symbol: signal.symbol,
+        side: signal.type,
+        strategy: signal.strategy,
+        confidence: signal.confidence
+      });
+      
+      if (result.success) {
+        logger.info(`✅ Trade executed: ${signal.type} ${signal.symbol}`, { service: "TradeExecutor" });
+      } else {
+        logger.warn(`❌ Trade failed: ${result.reason}`, { service: "TradeExecutor" });
+      }
+    });
+    
     logger.info("TradeExecutorService initialized", { service: "TradeExecutor" });
   }
 
   start() { this.running = true; this._monitorOpenTrades(); }
   stop() { this.running = false; }
 
-  // NOVOS MÉTODOS PARA PAUSA
   pauseTrading() { 
     this.paused = true; 
     logger.info("Trading paused by MarketConsciousness", { service: "TradeExecutor" });
