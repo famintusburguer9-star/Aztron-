@@ -24,6 +24,7 @@ class MarketConsciousnessService {
     this._mode = "OPERATING";
     this._manuallyPaused = false;
     this._weeklyReport = null;
+    this._dailyReports = []; // NOVO: histórico de relatórios diários
     this._memecoins = {};
     this._hypeAlerts = [];
     this._lastCheck = null;
@@ -32,11 +33,94 @@ class MarketConsciousnessService {
 
     eventBus.on("tick", () => this._maybeAutoEvaluate());
     this._initMemecoins();
+    this._scheduleDailyReport(); // NOVO: agenda relatório diário
   }
 
   async start() {
     logger.info("MarketConsciousnessService started", { service: "MarketConsciousness" });
     return { success: true };
+  }
+
+  // ─── NOVO: Agenda relatório diário à meia-noite ─────────────────────────────
+  _scheduleDailyReport() {
+    const now = new Date();
+    const night = new Date(now);
+    night.setHours(24, 0, 0, 0); // meia-noite
+    const delay = night.getTime() - now.getTime();
+    
+    setTimeout(() => {
+      this._generateDailyReport();
+      setInterval(() => this._generateDailyReport(), 24 * 60 * 60 * 1000);
+    }, delay);
+  }
+
+  // ─── NOVO: Gera e salva relatório diário ────────────────────────────────────
+  _generateDailyReport() {
+    try {
+      const db = require("./DatabaseService");
+      const exchange = require("./ExchangeAdapterService");
+      
+      const trades = db.getTrades({ limit: 500, status: "CLOSED" });
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      const todayTrades = trades.filter(t => new Date(t.timestamp) >= today);
+      
+      const wins = todayTrades.filter(t => t.pnl > 0).length;
+      const losses = todayTrades.filter(t => t.pnl <= 0).length;
+      const winRate = todayTrades.length > 0 ? (wins / todayTrades.length) * 100 : 0;
+      const totalPnl = todayTrades.reduce((sum, t) => sum + (t.pnl || 0), 0);
+      
+      const bestTrade = todayTrades.length > 0 ? todayTrades.reduce((best, t) => (t.pnl > best.pnl ? t : best), todayTrades[0]) : null;
+      const worstTrade = todayTrades.length > 0 ? todayTrades.reduce((worst, t) => (t.pnl < worst.pnl ? t : worst), todayTrades[0]) : null;
+      
+      // Pega saldo atual
+      const balance = exchange.getBalance();
+      const totalEquity = balance.USDT + Object.entries(balance).filter(([k]) => k !== "USDT").reduce((a, [k, v]) => {
+        const ticker = exchange.getTicker(`${k}USDT`);
+        return a + (ticker ? v * ticker.price : 0);
+      }, 0);
+      
+      const dailyReport = {
+        date: new Date().toISOString(),
+        dateStr: today.toISOString().split('T')[0],
+        totalTrades: todayTrades.length,
+        wins,
+        losses,
+        winRate: Math.round(winRate * 10) / 10,
+        totalPnl: Math.round(totalPnl * 100) / 100,
+        bestTrade: bestTrade ? {
+          symbol: bestTrade.symbol,
+          pnl: Math.round(bestTrade.pnl * 100) / 100,
+          pnlPct: bestTrade.pnlPct
+        } : null,
+        worstTrade: worstTrade ? {
+          symbol: worstTrade.symbol,
+          pnl: Math.round(worstTrade.pnl * 100) / 100,
+          pnlPct: worstTrade.pnlPct
+        } : null,
+        finalBalance: Math.round(totalEquity * 100) / 100,
+        generatedAt: new Date().toISOString()
+      };
+      
+      // Armazena no histórico (mantém últimos 30 dias)
+      this._dailyReports.unshift(dailyReport);
+      if (this._dailyReports.length > 30) this._dailyReports.pop();
+      
+      // Persiste no storage
+      const storage = require("./storage");
+      storage.set("dailyReports", this._dailyReports);
+      
+      logger.info(`[Consciousness] Relatório Diário gerado: ${dailyReport.totalTrades} trades, PnL: $${dailyReport.totalPnl}, WR: ${dailyReport.winRate}%`, { service: "MarketConsciousness" });
+      
+      // Emite evento para WebSocket
+      eventBus.emit("daily_report", dailyReport);
+      
+      return dailyReport;
+    } catch (error) {
+      logger.error(`[Consciousness] Error generating daily report: ${error.message}`, { service: "MarketConsciousness" });
+      return null;
+    }
   }
 
   // ─── Volume helpers ─────────────────────────────────────────────────────────
@@ -257,13 +341,11 @@ class MarketConsciousnessService {
     this._updateMemecoins();
   }
 
-  // 🔧 CORREÇÃO: Modo PAPER nunca entra em STUDY
   _autoEvaluate() {
     try {
       const db = require("./DatabaseService");
       const config = db.getConfig();
       
-      // 🆕 SOLUÇÃO: Se for PAPER MODE, NUNCA entrar em MODO ESTUDO
       if (config.mode === "PAPER") {
         if (this._mode === "STUDY") {
           this._mode = "OPERATING";
@@ -273,7 +355,6 @@ class MarketConsciousnessService {
         return;
       }
       
-      // Código original SÓ para modo LIVE
       this._weeklyReport = this._buildWeeklyReport();
       const { weeklyWinRate, maxDrawdown } = this._weeklyReport;
 
@@ -320,6 +401,19 @@ class MarketConsciousnessService {
   getReport() {
     this._updateMemecoins();
     return { status: this.getConsciousnessStatus(), performance: this.getWeeklyPerformance(), memecoins: Object.values(this._memecoins) };
+  }
+
+  // ─── NOVO: Retorna relatório diário atual ───────────────────────────────────
+  getDailyReport() {
+    if (this._dailyReports.length === 0) {
+      return this._generateDailyReport();
+    }
+    return this._dailyReports[0];
+  }
+
+  // ─── NOVO: Retorna histórico de relatórios diários ──────────────────────────
+  getDailyHistory(limit = 7) {
+    return this._dailyReports.slice(0, limit);
   }
 
   shouldPauseTrading() {
