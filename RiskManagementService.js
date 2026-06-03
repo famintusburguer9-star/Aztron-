@@ -23,8 +23,8 @@ class RiskManagementService {
     if (this.paused) errors.push("Engine is paused");
     if (this.pausedSymbols.has(symbol)) errors.push(`${symbol} is paused (Flash Crash Shield)`);
     
-    // 🔥 CORREÇÃO: Aumenta o limite de 5x para 20x (ou remove a linha se quiser sem limite)
-    if (notionalValue > riskAmount * 20) errors.push(`Position size too large. Max: $${(riskAmount * 20).toFixed(2)}`);
+    // 🔥 Limite aumentado para 100x (praticamente sem limite)
+    if (notionalValue > riskAmount * 100) errors.push(`Position size too large. Max: $${(riskAmount * 100).toFixed(2)}`);
     
     if (bal.USDT < notionalValue * 0.1) errors.push("Insufficient USDT balance");
 
