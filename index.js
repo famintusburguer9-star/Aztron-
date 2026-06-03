@@ -404,6 +404,13 @@ app.get("/api/consciousness/memecoin/hype", (_req, res) => res.json(marketConsci
 app.get("/api/consciousness/alerts", (_req, res) => res.json(marketConsciousness.getHypeAlerts()));
 app.get("/api/consciousness/weekly", (_req, res) => res.json(marketConsciousness.getWeeklyPerformance()));
 
+// ─── NOVAS ROTAS: Relatório Diário ────────────────────────────────────────────
+app.get("/api/consciousness/daily", (_req, res) => res.json(marketConsciousness.getDailyReport()));
+app.get("/api/consciousness/daily/history", (req, res) => {
+  const limit = parseInt(req.query.limit) || 7;
+  res.json(marketConsciousness.getDailyHistory(limit));
+});
+
 // ─── Tokenomics Service ($AZTRON Token) ───────────────────────────────────────
 app.get("/api/tokenomics/stats", (_req, res) => res.json(tokenomics.getTokenStats()));
 app.post("/api/tokenomics/burn", (req, res) => {
