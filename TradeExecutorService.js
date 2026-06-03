@@ -4,6 +4,7 @@ const slippage = require("./SlippageEstimatorService");
 const db = require("./DatabaseService");
 const eventBus = require("./EventBus");
 const logger = require("./LoggerService");
+const tokenomics = require("./TokenomicsService");
 
 class TradeExecutorService {
   constructor() {
@@ -113,8 +114,16 @@ class TradeExecutorService {
           trade.exitPrice = currentPrice;
           this.openTrades = this.openTrades.filter(t => t.id !== trade.id);
           db.addTrade(trade);
+          
+          // 🔥 NOVO: Processa lucro no TokenomicsService (Savings)
+          if (trade.pnl > 0) {
+            tokenomics.processProfit(trade.pnl);
+            logger.info(`💰 Profit processed: $${trade.pnl} → Savings updated`, { service: "TradeExecutor" });
+          }
+          
           eventBus.emit("trade", { action: "CLOSE", trade, reason: hitTP ? "TAKE_PROFIT" : "STOP_LOSS" });
           logger.info(`Trade closed (${hitTP ? "TP" : "SL"}): ${trade.symbol} PnL: $${trade.pnl}`, { service: "TradeExecutor" });
+          
           if (hitSL) {
             db.addAlert({ id: `al_${Date.now()}`, severity: "warning", message: `Stop loss hit: ${trade.symbol} PnL: $${trade.pnl}`, timestamp: new Date().toISOString(), read: false });
             eventBus.emit("alert", { severity: "warning", message: `Stop loss hit: ${trade.symbol}` });
