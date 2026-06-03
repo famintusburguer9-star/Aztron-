@@ -437,6 +437,16 @@ app.post("/api/tokenomics/reward", (req, res) => {
 });
 app.get("/api/tokenomics/roadmap", (_req, res) => res.json(tokenomics.getRoadmap()));
 
+// 🆕 ROTAS DO SAVINGS (COFRE)
+app.get("/api/savings/status", (_req, res) => res.json(tokenomics.getSavingsStatus()));
+app.post("/api/savings/withdraw", (req, res) => {
+  const { amount } = req.body;
+  if (!amount || amount <= 0) {
+    return res.status(400).json({ error: "Amount is required and must be positive" });
+  }
+  res.json(tokenomics.withdrawFromSavings(amount));
+});
+
 // ─── WebSocket ────────────────────────────────────────────────────────────────
 io.on("connection", (socket) => {
   logger.info(`WebSocket connected: ${socket.id}`, { service: "WebSocket" });
@@ -453,6 +463,7 @@ io.on("connection", (socket) => {
   const optimizerHandler = (data) => socket.emit("optimizer:progress", data);
   const optimizerCompleteHandler = (data) => socket.emit("optimizer:complete", data);
   const sentimentScanHandler = (data) => socket.emit("sentiment:scan:complete", data);
+  const savingsUpdateHandler = (data) => socket.emit("savings:update", data); // 🆕
 
   eventBus.on("tick", tickHandler);
   eventBus.on("signal", signalHandler);
@@ -463,6 +474,7 @@ io.on("connection", (socket) => {
   eventBus.on("optimizer:progress", optimizerHandler);
   eventBus.on("optimizer:complete", optimizerCompleteHandler);
   eventBus.on("sentiment:scan:complete", sentimentScanHandler);
+  eventBus.on("savings:update", savingsUpdateHandler); // 🆕
 
   socket.on("disconnect", () => {
     eventBus.off("tick", tickHandler);
@@ -474,6 +486,7 @@ io.on("connection", (socket) => {
     eventBus.off("optimizer:progress", optimizerHandler);
     eventBus.off("optimizer:complete", optimizerCompleteHandler);
     eventBus.off("sentiment:scan:complete", sentimentScanHandler);
+    eventBus.off("savings:update", savingsUpdateHandler);
     logger.info(`WebSocket disconnected: ${socket.id}`, { service: "WebSocket" });
   });
 });
