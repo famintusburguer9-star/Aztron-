@@ -1,5 +1,6 @@
 const eventBus = require("./EventBus");
 const logger = require("./LoggerService");
+const db = require("./DatabaseService");
 
 // ─── $AZTRON Token Constants ──────────────────────────────────────────────────
 const TOTAL_SUPPLY       = 1_000_000_000;   // 1 billion $AZTRON
@@ -7,6 +8,10 @@ const BURN_RATE_PER_TRADE = 0.005;           // 0.5% burned per profitable trade
 const REWARD_THRESHOLD   = 60;              // win rate % to earn rewards
 const REWARD_PER_WIN     = 100;             // tokens per winning trade
 const INITIAL_PRICE_USD  = 0.0001;          // $0.0001 initial price
+
+// 🆕 Savings (Cofre) Configuration
+const PROFIT_SHARE_PERCENT = 20;             // 20% do lucro vai pro cofre
+const SAVINGS_ACCOUNT = "AZTRON_SAVINGS";    // Identificador do cofre
 
 // Allocation breakdown
 const ALLOCATION = {
@@ -33,6 +38,14 @@ class TokenomicsService {
     this._poolLiquidity = 0;
     this._lastBurn      = null;
     this._lastReward    = null;
+    
+    // 🆕 Savings (Cofre) properties
+    this._savingsBalance = 0;      // Saldo do cofre (você pode sacar)
+    this._workingCapital = 0;      // Capital de trabalho (robô opera)
+    this._totalWithdrawn = 0;      // Total já sacado
+
+    // Load saved data from database
+    this._loadSavingsData();
 
     // Listen to trades for auto-burn / auto-reward
     eventBus.on("trade", (data) => this._processTrade(data));
@@ -45,6 +58,98 @@ class TokenomicsService {
   async start() {
     logger.info("TokenomicsService started — $AZTRON ecosystem ready", { service: "Tokenomics" });
     return { success: true };
+  }
+
+  // 🆕 Load savings data from database
+  _loadSavingsData() {
+    try {
+      const saved = db.getSavings?.();
+      if (saved) {
+        this._savingsBalance = saved.savingsBalance || 0;
+        this._workingCapital = saved.workingCapital || 0;
+        this._totalWithdrawn = saved.totalWithdrawn || 0;
+        logger.info(`[Savings] Carregado: Cofre=$${this._savingsBalance}, Capital=$${this._workingCapital}`, { service: "Tokenomics" });
+      }
+    } catch (error) {
+      logger.warn(`[Savings] Nenhum dado salvo encontrado`, { service: "Tokenomics" });
+    }
+  }
+
+  // 🆕 Save savings data to database
+  _saveSavingsData() {
+    try {
+      if (db.saveSavings) {
+        db.saveSavings({
+          savingsBalance: this._savingsBalance,
+          workingCapital: this._workingCapital,
+          totalWithdrawn: this._totalWithdrawn,
+          lastUpdated: new Date().toISOString()
+        });
+      }
+    } catch (error) {
+      logger.error(`[Savings] Erro ao salvar: ${error.message}`, { service: "Tokenomics" });
+    }
+  }
+
+  // 🆕 Processa lucro de trade (separando para o cofre)
+  processProfit(profitAmount) {
+    if (profitAmount <= 0) return { success: false, error: "Profit must be positive" };
+    
+    const toSavings = profitAmount * (PROFIT_SHARE_PERCENT / 100);
+    const toCapital = profitAmount - toSavings;
+    
+    this._savingsBalance += toSavings;
+    this._workingCapital += toCapital;
+    this._saveSavingsData();
+    
+    logger.info(`💰 Lucro processado: $${profitAmount.toFixed(2)} | Cofre: +$${toSavings.toFixed(2)} | Capital: +$${toCapital.toFixed(2)}`, { 
+      service: "Tokenomics",
+      savings: this._savingsBalance,
+      capital: this._workingCapital
+    });
+    
+    eventBus.emit("savings:update", {
+      profit: profitAmount,
+      toSavings,
+      toCapital,
+      savingsBalance: this._savingsBalance,
+      workingCapital: this._workingCapital,
+      timestamp: new Date().toISOString()
+    });
+    
+    return { success: true, toSavings, toCapital, savingsBalance: this._savingsBalance, workingCapital: this._workingCapital };
+  }
+
+  // 🆕 Sacar dinheiro do cofre
+  withdrawFromSavings(amount) {
+    if (amount <= 0) return { success: false, error: "Amount must be positive" };
+    if (amount > this._savingsBalance) return { success: false, error: "Insufficient savings balance" };
+    
+    this._savingsBalance -= amount;
+    this._totalWithdrawn += amount;
+    this._saveSavingsData();
+    
+    logger.info(`🏦 Saque realizado: $${amount.toFixed(2)} | Saldo restante: $${this._savingsBalance.toFixed(2)}`, { service: "Tokenomics" });
+    
+    eventBus.emit("savings:withdraw", {
+      amount,
+      remaining: this._savingsBalance,
+      totalWithdrawn: this._totalWithdrawn,
+      timestamp: new Date().toISOString()
+    });
+    
+    return { success: true, amount, remainingBalance: this._savingsBalance, totalWithdrawn: this._totalWithdrawn };
+  }
+
+  // 🆕 Obter status do cofre
+  getSavingsStatus() {
+    return {
+      savingsBalance: Math.round(this._savingsBalance * 100) / 100,
+      workingCapital: Math.round(this._workingCapital * 100) / 100,
+      totalWithdrawn: Math.round(this._totalWithdrawn * 100) / 100,
+      profitSharePercent: PROFIT_SHARE_PERCENT,
+      lastUpdated: new Date().toISOString()
+    };
   }
 
   // ─── Internal ─────────────────────────────────────────────────────────────
@@ -126,6 +231,7 @@ class TokenomicsService {
       lastReward:        this._lastReward,
       allocation:        ALLOCATION,
       recentTxs:         this._transactions.slice(0, 10),
+      savings: this.getSavingsStatus() // 🆕 Inclui status do cofre
     };
   }
 
@@ -136,6 +242,7 @@ class TokenomicsService {
         { address: "0xAZT...R0N", balance: Math.floor(this._circulatingSupply * 0.4), percentage: 40 },
         { address: "0xLIQ...POOL", balance: Math.floor(this._circulatingSupply * 0.25), percentage: 25 },
         { address: "0xTEA...M", balance: Math.floor(this._circulatingSupply * 0.15), percentage: 15 },
+        { address: SAVINGS_ACCOUNT, balance: Math.floor(this._savingsBalance * 100), percentage: 0.1 } // 🆕 Conta do cofre
       ]
     };
   }
