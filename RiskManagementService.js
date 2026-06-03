@@ -23,7 +23,7 @@ class RiskManagementService {
     if (this.paused) errors.push("Engine is paused");
     if (this.pausedSymbols.has(symbol)) errors.push(`${symbol} is paused (Flash Crash Shield)`);
     
-    // 🔥 Limite aumentado para 100x (praticamente sem limite)
+    // Limite de 100x (praticamente sem limite)
     if (notionalValue > riskAmount * 100) errors.push(`Position size too large. Max: $${(riskAmount * 100).toFixed(2)}`);
     
     if (bal.USDT < notionalValue * 0.1) errors.push("Insufficient USDT balance");
@@ -37,8 +37,38 @@ class RiskManagementService {
     const totalEquity = bal.USDT + 41500;
     const riskDollar = totalEquity * (cfg.riskPerTrade / 100);
     const stopLossDollar = price * (stopLossPercent / 100);
-    const qty = riskDollar / stopLossDollar;
-    return { qty: Math.round(qty * 10000) / 10000, riskDollar, stopPrice: price * (1 - stopLossPercent / 100) };
+    let qty = riskDollar / stopLossDollar;
+    
+    // 🔥 CORREÇÃO: Limitar quantidade no modo PAPER
+    const isPaperMode = cfg.mode === "PAPER";
+    
+    if (isPaperMode) {
+      // Limite de 5% do saldo USDT por trade no PAPER mode
+      const maxQtyPaper = (bal.USDT * 0.05) / price;
+      if (qty > maxQtyPaper) {
+        qty = maxQtyPaper;
+        logger.warn(`[RiskManagement] PAPER MODE: Qty limitada a 5% do saldo (${qty.toFixed(6)} ${symbol})`);
+      }
+    }
+    
+    // Limite absoluto: nunca usar mais de 20% do saldo USDT
+    const absoluteMax = (bal.USDT * 0.2) / price;
+    if (qty > absoluteMax) {
+      qty = absoluteMax;
+      logger.warn(`[RiskManagement] Qty limitada a 20% do saldo (${qty.toFixed(6)} ${symbol})`);
+    }
+    
+    // Garantir quantidade mínima positiva
+    if (qty <= 0) {
+      qty = 0.001;
+      logger.warn(`[RiskManagement] Qty ajustada para valor mínimo: ${qty.toFixed(6)} ${symbol}`);
+    }
+    
+    return { 
+      qty: Math.round(qty * 10000) / 10000, 
+      riskDollar, 
+      stopPrice: price * (1 - stopLossPercent / 100) 
+    };
   }
 
   pauseSymbol(symbol, durationMs = 300000) {
@@ -53,7 +83,7 @@ class RiskManagementService {
   getPausedSymbols() { return [...this.pausedSymbols]; }
   getStats() {
     const cfg = db.getConfig();
-    return { paused: this.paused, pausedSymbols: this.getPausedSymbols(), riskPerTrade: cfg.riskPerTrade, stopLoss: cfg.stopLoss, takeProfit: cfg.takeProfit };
+    return { paused: this.paused, pausedSymbols: this.getPausedSymbols(), riskPerTrade: cfg.riskPerTrade, stopLoss: cfg.stopLoss, takeProfit: cfg.takeProfit, mode: cfg.mode };
   }
 }
 
