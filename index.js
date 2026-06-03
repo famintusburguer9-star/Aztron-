@@ -303,6 +303,14 @@ app.post("/api/ai/optimize/start", (_req, res) => res.json(aiOptimizer.start()))
 app.get("/api/ai/optimize/status", (_req, res) => res.json(aiOptimizer.getStatus()));
 app.post("/api/ai/optimize/apply", (_req, res) => res.json(aiOptimizer.applyBestConfig()));
 app.post("/api/ai/optimize/reset", (_req, res) => { aiOptimizer.reset(); res.json({ success: true }); });
+app.get("/api/ai/optimize/history", (req, res) => {
+  const limit = parseInt(req.query.limit) || 5;
+  res.json(aiOptimizer.getHistory(limit));
+});
+app.post("/api/ai/optimize/auto", (req, res) => {
+  const { enabled } = req.body;
+  res.json(aiOptimizer.enableAutoOptimize(enabled));
+});
 
 // ─── Backtest ─────────────────────────────────────────────────────────────────
 app.post("/api/backtest/run", async (req, res) => {
