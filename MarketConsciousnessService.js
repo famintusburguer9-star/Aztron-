@@ -188,16 +188,12 @@ class MarketConsciousnessService {
     try {
       const db = require("./DatabaseService");
       
-      // Busca dados reais da IA
       const aiStats = aiLearning.getLearningStats();
-      const aiStatus = aiLearning.getStatus();
-      
       const winRate = aiStats?.overallWinRate || 0;
       const totalTrades = aiStats?.totalTrades || 0;
       const patternsCount = aiStats?.patternsLearned || 0;
       const aiConfidence = aiStats?.currentConfidence || 0;
       
-      // Busca trades do Database para drawdown e PnL
       const trades = db.getTrades({ limit: 200, status: "CLOSED" });
       let maxDrawdown = 0;
       let peak = 0;
@@ -261,8 +257,23 @@ class MarketConsciousnessService {
     this._updateMemecoins();
   }
 
+  // 🔧 CORREÇÃO: Modo PAPER nunca entra em STUDY
   _autoEvaluate() {
     try {
+      const db = require("./DatabaseService");
+      const config = db.getConfig();
+      
+      // 🆕 SOLUÇÃO: Se for PAPER MODE, NUNCA entrar em MODO ESTUDO
+      if (config.mode === "PAPER") {
+        if (this._mode === "STUDY") {
+          this._mode = "OPERATING";
+          this._pauseReason = null;
+          logger.info(`🔥 PAPER MODE: Forçando saída do MODO ESTUDO para operar e aprender.`);
+        }
+        return;
+      }
+      
+      // Código original SÓ para modo LIVE
       this._weeklyReport = this._buildWeeklyReport();
       const { weeklyWinRate, maxDrawdown } = this._weeklyReport;
 
