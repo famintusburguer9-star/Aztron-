@@ -8,7 +8,8 @@ class DatabaseService {
     this.alerts = storage.get("alerts", []);
     this.config = storage.get("config", this._defaultConfig());
     this.deployHistory = storage.get("deployHistory", this._defaultDeploys());
-    this.memory = storage.get("memory", { patterns: [], strategies: [], tradeMemory: [] }); // NOVO: memória da IA
+    this.memory = storage.get("memory", { patterns: [], strategies: [], tradeMemory: [] });
+    this.savings = storage.get("savings", { savingsBalance: 0, workingCapital: 0, totalWithdrawn: 0, lastUpdated: null }); // 🆕 Savings/Cofre
     logger.info("DatabaseService initialized", { service: "DatabaseService" });
   }
 
@@ -37,20 +38,23 @@ class DatabaseService {
   saveAlerts() { storage.set("alerts", this.alerts); }
   saveConfig() { storage.set("config", this.config); }
   saveDeployHistory() { storage.set("deployHistory", this.deployHistory); }
+  saveMemory() { storage.set("memory", this.memory); }
+  saveSavings() { storage.set("savings", this.savings); } // 🆕 Salva dados do cofre
   
-  // NOVO: Métodos para memória da IA
-  saveMemory() { 
-    storage.set("memory", this.memory); 
-  }
-  
-  getMemory() { 
-    return this.memory; 
-  }
+  getMemory() { return this.memory; }
+  getSavings() { return this.savings; } // 🆕 Recupera dados do cofre
   
   updateMemory(data) {
     this.memory = { ...this.memory, ...data };
     this.saveMemory();
     return this.memory;
+  }
+  
+  // 🆕 Atualiza dados do cofre
+  updateSavings(data) {
+    this.savings = { ...this.savings, ...data, lastUpdated: new Date().toISOString() };
+    this.saveSavings();
+    return this.savings;
   }
 
   addTrade(trade) { this.trades.unshift(trade); if (this.trades.length > 500) this.trades.length = 500; this.saveTrades(); }
