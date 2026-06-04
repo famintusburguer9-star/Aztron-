@@ -1,4 +1,5 @@
-const db = require('./DatabaseService');
+const db = require("./DatabaseService");
+const logger = require("./LoggerService");
 
 class CapitalRouterService {
   constructor() {
@@ -9,23 +10,16 @@ class CapitalRouterService {
 
   async initialize() {
     try {
-      // Carregar capital salvo do banco
-      const [rows] = await db.query(
-        `SELECT * FROM capital_state WHERE robot_type IN ('hft', 'swing')`
-      );
+      // Carregar capital salvo do banco (usando o método do DatabaseService)
+      const capitalState = db.getCapitalState();
       
-      for (const row of rows) {
-        if (row.robot_type === 'hft') this.hftCapital = parseFloat(row.capital);
-        if (row.robot_type === 'swing') this.swingCapital = parseFloat(row.capital);
-      }
-      
-      if (this.hftCapital === 0) this.hftCapital = 1000;  // Capital inicial HFT
-      if (this.swingCapital === 0) this.swingCapital = 10000; // Capital inicial SWING
+      this.hftCapital = capitalState.hft || 1000;
+      this.swingCapital = capitalState.swing || 10000;
       
       this.initialized = true;
-      console.log(`[CapitalRouter] Inicializado | HFT: $${this.hftCapital} | SWING: $${this.swingCapital}`);
+      logger.info(`[CapitalRouter] Inicializado | HFT: $${this.hftCapital} | SWING: $${this.swingCapital}`);
     } catch (error) {
-      console.error('[CapitalRouter] Erro init:', error);
+      logger.error(`[CapitalRouter] Erro init: ${error.message}`);
       this.hftCapital = 1000;
       this.swingCapital = 10000;
       this.initialized = true;
@@ -38,26 +32,23 @@ class CapitalRouterService {
     try {
       // Só envia se for lucro positivo
       if (profit <= 0) {
-        console.log(`[CapitalRouter] HFT prejuízo de $${profit} - nada enviado`);
+        logger.info(`[CapitalRouter] HFT prejuízo de $${profit} - nada enviado`);
         await this.logFlow(hftTradeId, profit, 0, 'HFT_PREJUZO');
         return { routed: false, amount: 0, reason: 'prejuizo' };
       }
 
       // TODO lucro vai pro robô semanal
       this.swingCapital += profit;
-      const previousHFT = this.hftCapital;
-      this.hftCapital -= profit; // Lucro sai do HFT (mas HFT mantém capital base)
       
-      // Na verdade HFT mantém seu capital, só envia o lucro pra SWING
-      // Corrigindo: HFT capital não diminui, só envia lucro acumulado
+      // Salva o estado atualizado
       await this.saveCapitalState();
       await this.logFlow(hftTradeId, profit, profit, 'LUCRO_ENVIADO_SWING');
       
-      console.log(`[CapitalRouter] $${profit} lucro HFT → SWING | SWING agora: $${this.swingCapital}`);
+      logger.info(`[CapitalRouter] $${profit} lucro HFT → SWING | SWING agora: $${this.swingCapital}`);
       
       return { routed: true, amount: profit, to: 'swing' };
     } catch (error) {
-      console.error('[CapitalRouter] Erro rota:', error);
+      logger.error(`[CapitalRouter] Erro rota: ${error.message}`);
       return { routed: false, amount: 0, error: error.message };
     }
   }
@@ -71,26 +62,20 @@ class CapitalRouterService {
   }
 
   async saveCapitalState() {
-    await db.query(
-      `INSERT INTO capital_state (robot_type, capital, updated_at) 
-       VALUES ('hft', ?, NOW()) 
-       ON DUPLICATE KEY UPDATE capital = VALUES(capital), updated_at = NOW()`,
-      [this.hftCapital]
-    );
-    await db.query(
-      `INSERT INTO capital_state (robot_type, capital, updated_at) 
-       VALUES ('swing', ?, NOW()) 
-       ON DUPLICATE KEY UPDATE capital = VALUES(capital), updated_at = NOW()`,
-      [this.swingCapital]
-    );
+    // Usando os métodos do DatabaseService
+    db.updateCapitalState('hft', this.hftCapital);
+    db.updateCapitalState('swing', this.swingCapital);
   }
 
   async logFlow(tradeId, profit, routedAmount, status) {
-    await db.query(
-      `INSERT INTO capital_flow_log (trade_id, profit, routed_amount, status, created_at)
-       VALUES (?, ?, ?, ?, NOW())`,
-      [tradeId, profit, routedAmount, status]
-    );
+    // Usando o método do DatabaseService
+    db.addCapitalFlowLog({
+      trade_id: tradeId,
+      profit: profit,
+      routed_amount: routedAmount,
+      status: status,
+      created_at: new Date().toISOString()
+    });
   }
 }
 
