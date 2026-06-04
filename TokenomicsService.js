@@ -120,6 +120,38 @@ class TokenomicsService {
     return { success: true, toSavings, toCapital, savingsBalance: this._savingsBalance, workingCapital: this._workingCapital };
   }
 
+  // 🆕 ADICIONAR DINHEIRO AO COFRE (usado pelo WeeklySettlementService)
+  addToSavings(amount) {
+    if (!amount || amount <= 0) {
+      logger.warn(`[Savings] Tentativa de adicionar valor inválido: ${amount}`);
+      return { success: false, error: "Invalid amount" };
+    }
+
+    this._savingsBalance += amount;
+    this._saveSavingsData();
+    
+    logger.info(`🏦 DEPÓSITO NO COFRE: +$${amount.toFixed(2)} | Saldo atual: $${this._savingsBalance.toFixed(2)}`, { 
+      service: "Tokenomics",
+      source: "weekly_settlement"
+    });
+    
+    // Emite evento via EventBus
+    eventBus.emit("savings:update", {
+      type: "deposit",
+      amount,
+      newBalance: this._savingsBalance,
+      source: "weekly_settlement",
+      timestamp: new Date().toISOString()
+    });
+    
+    return { 
+      success: true, 
+      amount, 
+      newBalance: this._savingsBalance,
+      source: "weekly_settlement"
+    };
+  }
+
   // 🆕 Sacar dinheiro do cofre
   withdrawFromSavings(amount) {
     if (amount <= 0) return { success: false, error: "Amount must be positive" };
