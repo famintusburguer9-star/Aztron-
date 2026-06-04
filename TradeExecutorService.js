@@ -12,7 +12,6 @@ class TradeExecutorService {
     this.paused = false;
     this.openTrades = db.getTrades({ status: "OPEN" });
     
-    // 🔥 LISTENER DE SINAIS - EXECUTA TRADES AUTOMATICAMENTE
     eventBus.on("signal", async (signal) => {
       if (!this.running || this.paused) return;
       if (signal.status !== "ACTIVE") return;
@@ -41,29 +40,34 @@ class TradeExecutorService {
 
   pauseTrading() { 
     this.paused = true; 
-    logger.info("Trading paused by MarketConsciousness", { service: "TradeExecutor" });
+    logger.info("Trading paused", { service: "TradeExecutor" });
     return { success: true, paused: true };
   }
 
   resumeTrading() { 
     this.paused = false; 
-    logger.info("Trading resumed by MarketConsciousness", { service: "TradeExecutor" });
+    logger.info("Trading resumed", { service: "TradeExecutor" });
     return { success: true, paused: false };
   }
 
-  isPaused() { 
-    return this.paused; 
-  }
+  isPaused() { return this.paused; }
 
   async executeTrade({ symbol, side, strategy, confidence }) {
     if (!this.running) return { success: false, reason: "Engine stopped" };
-    if (this.paused) return { success: false, reason: "Trading paused by MarketConsciousness (study mode)" };
+    if (this.paused) return { success: false, reason: "Trading paused" };
     
     const ticker = exchange.getTicker(symbol);
     if (!ticker) return { success: false, reason: "No ticker data" };
 
     const cfg = db.getConfig();
     const positionInfo = risk.calculatePositionSize(symbol, ticker.price, cfg.stopLoss);
+    
+    // 🔥 VERIFICA SE QUANTIDADE É VÁLIDA
+    if (!positionInfo.qty || positionInfo.qty <= 0) {
+      logger.warn(`❌ Invalid quantity: ${positionInfo.qty} for ${symbol}`, { service: "TradeExecutor" });
+      return { success: false, reason: "Invalid quantity" };
+    }
+    
     const validation = risk.validateTrade(symbol, side, positionInfo.qty * ticker.price);
     if (!validation.approved) return { success: false, reason: validation.errors.join("; ") };
 
@@ -73,11 +77,21 @@ class TradeExecutorService {
     try {
       const order = await exchange.placeOrder(symbol, side, positionInfo.qty, ticker.price);
       const trade = {
-        id: `trade_${Date.now()}`, symbol, side, strategy, confidence,
-        status: "OPEN", entryPrice: order.price, exitPrice: null, qty: positionInfo.qty,
-        pnl: 0, pnlPct: 0, stopLoss: positionInfo.stopPrice,
+        id: `trade_${Date.now()}`,
+        symbol,
+        side,
+        strategy,
+        confidence,
+        status: "OPEN",
+        entryPrice: order.price,
+        exitPrice: null,
+        qty: positionInfo.qty,
+        pnl: 0,
+        pnlPct: 0,
+        stopLoss: positionInfo.stopPrice,
         takeProfit: order.price * (1 + cfg.takeProfit / 100),
-        timestamp: new Date().toISOString(), orderId: order.orderId,
+        timestamp: new Date().toISOString(),
+        orderId: order.orderId,
       };
       this.openTrades.push(trade);
       db.addTrade(trade);
@@ -106,8 +120,13 @@ class TradeExecutorService {
         trade.pnl = Math.round(pnl * 100) / 100;
         trade.pnlPct = Math.round(pnlPct * 100) / 100;
 
-        const hitSL = side === "BUY" ? currentPrice <= trade.stopLoss : currentPrice >= trade.stopLoss * 2 - trade.entryPrice;
-        const hitTP = side === "BUY" ? currentPrice >= trade.takeProfit : currentPrice <= trade.entryPrice - (trade.takeProfit - trade.entryPrice);
+        // 🔥 CORREÇÃO DO STOP LOSS PARA SELL
+        const hitSL = side === "BUY" 
+          ? currentPrice <= trade.stopLoss 
+          : currentPrice >= trade.stopLoss;
+        const hitTP = side === "BUY" 
+          ? currentPrice >= trade.takeProfit 
+          : currentPrice <= trade.takeProfit;
 
         if (hitSL || hitTP) {
           trade.status = "CLOSED";
@@ -115,19 +134,13 @@ class TradeExecutorService {
           this.openTrades = this.openTrades.filter(t => t.id !== trade.id);
           db.addTrade(trade);
           
-          // 🔥 NOVO: Processa lucro no TokenomicsService (Savings)
           if (trade.pnl > 0) {
             tokenomics.processProfit(trade.pnl);
-            logger.info(`💰 Profit processed: $${trade.pnl} → Savings updated`, { service: "TradeExecutor" });
+            logger.info(`💰 Profit processed: $${trade.pnl}`, { service: "TradeExecutor" });
           }
           
           eventBus.emit("trade", { action: "CLOSE", trade, reason: hitTP ? "TAKE_PROFIT" : "STOP_LOSS" });
           logger.info(`Trade closed (${hitTP ? "TP" : "SL"}): ${trade.symbol} PnL: $${trade.pnl}`, { service: "TradeExecutor" });
-          
-          if (hitSL) {
-            db.addAlert({ id: `al_${Date.now()}`, severity: "warning", message: `Stop loss hit: ${trade.symbol} PnL: $${trade.pnl}`, timestamp: new Date().toISOString(), read: false });
-            eventBus.emit("alert", { severity: "warning", message: `Stop loss hit: ${trade.symbol}` });
-          }
         }
       }
     }, 5000);
