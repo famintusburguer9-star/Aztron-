@@ -3,6 +3,9 @@ const eventBus = require("./EventBus");
 const logger = require("./LoggerService");
 const db = require("./DatabaseService");
 
+// 🆕 IMPORT PARA CAPITAL ROUTER (fluxo de lucro)
+const capitalRouter = require("./CapitalRouterService");
+
 // ─── CONFIGURAÇÕES DO HFT ─────────────────────────────────────────────────────
 const HFT_CONFIG = {
   SYMBOLS: ["BTCUSDT", "ETHUSDT", "BNBUSDT"],
@@ -70,6 +73,11 @@ class HFTService {
     logger.info("HFTService initialized", { service: "HFT" });
   }
   
+  async initialize() {
+    logger.info("HFTService ready", { service: "HFT" });
+    return { success: true };
+  }
+  
   start() {
     if (this.running) return { success: false, reason: "Already running" };
     
@@ -87,6 +95,47 @@ class HFTService {
     }
     logger.info("HFTService stopped", { service: "HFT" });
     return { success: true };
+  }
+  
+  getStatus() {
+    const hourKey = `${Object.keys(this.lastTradeTime)[0]}_${Math.floor(Date.now() / 3600000)}`;
+    
+    return {
+      running: this.running,
+      activeTrades: this.activeTrades.length,
+      totalTradesToday: this.tradeHistory.length,
+      dailyProfit: Math.round(this.dailyProfit * 100) / 100,
+      dailyLoss: Math.round(this.dailyLoss * 100) / 100,
+      netDaily: Math.round((this.dailyProfit - this.dailyLoss) * 100) / 100,
+      tradesPerHour: this.tradesPerHour[hourKey] || 0,
+      maxTradesPerHour: HFT_CONFIG.MAX_TRADES_PER_HOUR,
+      activeStrategy: "Consensus (MeanRev + Breakout + Momentum)",
+      activePositions: this.activeTrades.map(t => ({
+        symbol: t.symbol,
+        side: t.side,
+        entryPrice: t.entryPrice,
+        pnl: t.pnl,
+        pnlPct: t.pnlPct
+      }))
+    };
+  }
+  
+  async getMetrics() {
+    const closedTrades = this.tradeHistory.filter(t => t.status === "CLOSED");
+    const wins = closedTrades.filter(t => t.pnl > 0);
+    const totalProfit = closedTrades.reduce((sum, t) => sum + (t.pnl || 0), 0);
+    
+    return {
+      totalTrades: closedTrades.length,
+      wins: wins.length,
+      losses: closedTrades.length - wins.length,
+      winRate: closedTrades.length > 0 ? (wins.length / closedTrades.length) * 100 : 0,
+      totalProfit: totalProfit,
+      tradesToday: this.tradeHistory.length,
+      dailyProfit: this.dailyProfit,
+      dailyLoss: this.dailyLoss,
+      sharpeRatio: 1.2 // Placeholder
+    };
   }
   
   // ─── Processa tick de preço ─────────────────────────────────────────────────
@@ -337,6 +386,15 @@ class HFTService {
         if (trade.pnl > 0) this.dailyProfit += trade.pnl;
         else this.dailyLoss += Math.abs(trade.pnl);
         
+        // 🆕 ENVIA LUCRO PARA O CAPITAL ROUTER (SE FOR LUCRO)
+        if (trade.pnl > 0) {
+          logger.info(`[HFT] Lucro de $${trade.pnl} será enviado para o robô SWING via CapitalRouter`, { service: "HFT" });
+          // Envia o lucro para o CapitalRouterService (que vai repassar ao robô semanal)
+          capitalRouter.routeHFTProfit(trade.pnl, trade.id).catch(err => {
+            logger.error(`[HFT] Erro ao enviar lucro para CapitalRouter: ${err.message}`, { service: "HFT" });
+          });
+        }
+        
         // Salva no banco
         db.addTrade({
           id: trade.id,
@@ -352,6 +410,11 @@ class HFTService {
           closedAt: trade.closedAt
         });
         
+        // Salva no HFT específico (para métricas)
+        if (db.addHFTTrade) {
+          db.addHFTTrade(trade);
+        }
+        
         eventBus.emit("hft:trade", { action: "CLOSE", trade });
         eventBus.emit("hft:profit", { 
           profit: trade.pnl,
@@ -366,8 +429,8 @@ class HFTService {
     }
   }
   
-  // ─── Escaneia oportunidades de trade ───────────────────────────────────────
-  _scan() {
+  // ─── Escaneia oportunidades de trade (CORRIGIDO - AGORA É ASYNC) ────────────
+  async _scan() {  // 🔥 ADICIONADO "async" AQUI!
     if (!this.running) return;
     
     // Monitora trades abertos
@@ -391,32 +454,9 @@ class HFTService {
       const hasOpenTrade = this.activeTrades.some(t => t.symbol === symbol);
       if (hasOpenTrade) continue;
       
-      // Executa trade
+      // 🔥 AGORA O AWAIT FUNCIONA PORQUE O MÉTODO É ASYNC!
       await this._executeTrade(signal.signal, symbol, indicators.currentPrice, signal.confidence);
     }
-  }
-  
-  // ─── Public API ────────────────────────────────────────────────────────────
-  getStatus() {
-    const hourKey = `${Object.keys(this.lastTradeTime)[0]}_${Math.floor(Date.now() / 3600000)}`;
-    
-    return {
-      running: this.running,
-      activeTrades: this.activeTrades.length,
-      totalTradesToday: this.tradeHistory.length,
-      dailyProfit: Math.round(this.dailyProfit * 100) / 100,
-      dailyLoss: Math.round(this.dailyLoss * 100) / 100,
-      netDaily: Math.round((this.dailyProfit - this.dailyLoss) * 100) / 100,
-      tradesPerHour: this.tradesPerHour[hourKey] || 0,
-      maxTradesPerHour: HFT_CONFIG.MAX_TRADES_PER_HOUR,
-      activePositions: this.activeTrades.map(t => ({
-        symbol: t.symbol,
-        side: t.side,
-        entryPrice: t.entryPrice,
-        pnl: t.pnl,
-        pnlPct: t.pnlPct
-      }))
-    };
   }
   
   getTrades(limit = 20) {
