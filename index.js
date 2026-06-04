@@ -35,6 +35,11 @@ const memoryService = require("./MemoryService");
 const marketConsciousness = require("./MarketConsciousnessService");
 const tokenomics = require("./TokenomicsService");
 
+// 🆕 HFT SERVICES
+const hftService = require("./HFTService");
+const capitalRouter = require("./CapitalRouterService");
+const weeklySettlement = require("./WeeklySettlementService");
+
 const PORT = process.env.PORT || 3001;
 const app = express();
 const server = http.createServer(app);
@@ -447,6 +452,129 @@ app.post("/api/savings/withdraw", (req, res) => {
   res.json(tokenomics.withdrawFromSavings(amount));
 });
 
+// ==================== 🆕 HFT ROUTES ====================
+
+// Iniciar HFT
+app.post("/api/hft/start", async (req, res) => {
+  try {
+    const result = await hftService.start();
+    res.json({ success: true, ...result });
+  } catch (error) {
+    logger.error("HFT start error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Parar HFT
+app.post("/api/hft/stop", async (req, res) => {
+  try {
+    const result = await hftService.stop();
+    res.json({ success: true, ...result });
+  } catch (error) {
+    logger.error("HFT stop error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Status do HFT
+app.get("/api/hft/status", async (req, res) => {
+  try {
+    const status = hftService.getStatus();
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Métricas do HFT
+app.get("/api/hft/metrics", async (req, res) => {
+  try {
+    const metrics = await hftService.getMetrics();
+    res.json(metrics);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Trades do HFT
+app.get("/api/hft/trades", (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 50;
+    const trades = db.getHFTTrades(limit);
+    res.json(trades);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Capital dos robôs (HFT + SWING)
+app.get("/api/capital/balance", async (req, res) => {
+  try {
+    const capitals = await capitalRouter.getCapitals();
+    res.json(capitals);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fluxo de capital (log de transferências HFT → SWING)
+app.get("/api/capital/flow", (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 50;
+    const flow = db.getCapitalFlowLog(limit);
+    res.json(flow);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Executar liquidação semanal (manual)
+app.post("/api/weekly/settle", async (req, res) => {
+  try {
+    const { swingProfit } = req.body;
+    if (swingProfit === undefined) {
+      return res.status(400).json({ error: "swingProfit é obrigatório" });
+    }
+    const result = await weeklySettlement.settleWeekly(swingProfit);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Histórico de liquidações semanais
+app.get("/api/weekly/settlements", async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+    const settlements = await weeklySettlement.getSettlementHistory(limit);
+    res.json(settlements);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Última liquidação
+app.get("/api/weekly/last", async (req, res) => {
+  try {
+    const last = await weeklySettlement.getLastSettlement();
+    res.json(last || { message: "Nenhuma liquidação encontrada" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Reset HFT (admin)
+app.post("/api/hft/reset", (req, res) => {
+  try {
+    const result = db.resetHFTData();
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==================== FIM HFT ROUTES ====================
+
 // ─── WebSocket ────────────────────────────────────────────────────────────────
 io.on("connection", (socket) => {
   logger.info(`WebSocket connected: ${socket.id}`, { service: "WebSocket" });
@@ -463,7 +591,11 @@ io.on("connection", (socket) => {
   const optimizerHandler = (data) => socket.emit("optimizer:progress", data);
   const optimizerCompleteHandler = (data) => socket.emit("optimizer:complete", data);
   const sentimentScanHandler = (data) => socket.emit("sentiment:scan:complete", data);
-  const savingsUpdateHandler = (data) => socket.emit("savings:update", data); // 🆕
+  const savingsUpdateHandler = (data) => socket.emit("savings:update", data);
+  
+  // 🆕 HFT WebSocket events
+  const hftTradeHandler = (trade) => socket.emit("hft:trade", trade);
+  const hftStatusHandler = (status) => socket.emit("hft:status", status);
 
   eventBus.on("tick", tickHandler);
   eventBus.on("signal", signalHandler);
@@ -474,7 +606,9 @@ io.on("connection", (socket) => {
   eventBus.on("optimizer:progress", optimizerHandler);
   eventBus.on("optimizer:complete", optimizerCompleteHandler);
   eventBus.on("sentiment:scan:complete", sentimentScanHandler);
-  eventBus.on("savings:update", savingsUpdateHandler); // 🆕
+  eventBus.on("savings:update", savingsUpdateHandler);
+  eventBus.on("hft:trade", hftTradeHandler);
+  eventBus.on("hft:status", hftStatusHandler);
 
   socket.on("disconnect", () => {
     eventBus.off("tick", tickHandler);
@@ -487,6 +621,8 @@ io.on("connection", (socket) => {
     eventBus.off("optimizer:complete", optimizerCompleteHandler);
     eventBus.off("sentiment:scan:complete", sentimentScanHandler);
     eventBus.off("savings:update", savingsUpdateHandler);
+    eventBus.off("hft:trade", hftTradeHandler);
+    eventBus.off("hft:status", hftStatusHandler);
     logger.info(`WebSocket disconnected: ${socket.id}`, { service: "WebSocket" });
   });
 });
@@ -499,13 +635,27 @@ async function main() {
   await marketConsciousness.start?.();
   await tokenomics.start?.();
   
+  // 🆕 Inicializar serviços HFT
+  await capitalRouter.initialize();
+  await hftService.initialize();
+  
   await orchestrator.init();
   await orchestrator.start();
+  
+  // 🆕 Auto-start HFT se configurado
+  const config = db.getConfig();
+  if (config.hftEnabled) {
+    await hftService.start();
+    logger.info("🚀 HFT Service auto-started", { service: "HFT" });
+  }
 
   server.listen(PORT, "0.0.0.0", () => {
     logger.info(`AZTRON Backend running on port ${PORT}`, { service: "Orchestrator" });
     logger.info(`REST API: http://0.0.0.0:${PORT}/api`, { service: "Orchestrator" });
     logger.info(`WebSocket: ws://0.0.0.0:${PORT}`, { service: "Orchestrator" });
+    logger.info(`🤖 HFT Trading Engine ready`, { service: "HFT" });
+    logger.info(`💰 Capital Router ready`, { service: "CapitalRouter" });
+    logger.info(`📊 Weekly Settlement ready`, { service: "WeeklySettlement" });
   });
 }
 
