@@ -1,5 +1,6 @@
-const db = require('../config/database');
-const tokenomicsService = require('./TokenomicsService');
+const db = require("./DatabaseService");
+const logger = require("./LoggerService");
+const tokenomics = require("./TokenomicsService");
 
 class WeeklySettlementService {
   constructor() {
@@ -10,7 +11,7 @@ class WeeklySettlementService {
   async settleWeekly(swingProfit) {
     try {
       if (swingProfit <= 0) {
-        console.log(`[WeeklySettlement] Sem lucro semanal ($${swingProfit}) - nada a liquidar`);
+        logger.info(`[WeeklySettlement] Sem lucro semanal ($${swingProfit}) - nada a liquidar`);
         return { settled: false, amount: 0, reason: 'sem_lucro' };
       }
 
@@ -18,17 +19,21 @@ class WeeklySettlementService {
       const toReinvest = swingProfit * this.reinvestRate;
 
       // Adicionar ao cofre (savings)
-      const currentBalance = tokenomicsService.getBalance();
-      tokenomicsService.addToSavings(toSavings); // Método do TokenomicsService
+      const result = tokenomics.addToSavings(toSavings);
+      
+      if (!result.success) {
+        logger.error(`[WeeklySettlement] Falha ao adicionar ao savings: ${result.error}`);
+        return { settled: false, error: result.error };
+      }
 
-      // Log da liquidação
-      await db.query(
-        `INSERT INTO weekly_settlements (swing_profit, to_savings, to_reinvest, settled_at)
-         VALUES (?, ?, ?, NOW())`,
-        [swingProfit, toSavings, toReinvest]
-      );
+      // Log da liquidação usando DatabaseService
+      db.addWeeklySettlement({
+        swing_profit: swingProfit,
+        to_savings: toSavings,
+        to_reinvest: toReinvest
+      });
 
-      console.log(`[WeeklySettlement] LIQUIDAÇÃO: $${swingProfit} lucro | ${this.savingsRate*100}% ($${toSavings}) → Cofre | ${this.reinvestRate*100}% ($${toReinvest}) reinvestido`);
+      logger.info(`[WeeklySettlement] LIQUIDAÇÃO: $${swingProfit} lucro | ${this.savingsRate*100}% ($${toSavings}) → Cofre | ${this.reinvestRate*100}% ($${toReinvest}) reinvestido`);
       
       return {
         settled: true,
@@ -39,24 +44,17 @@ class WeeklySettlementService {
         reinvestRate: this.reinvestRate
       };
     } catch (error) {
-      console.error('[WeeklySettlement] Erro:', error);
+      logger.error(`[WeeklySettlement] Erro: ${error.message}`);
       return { settled: false, error: error.message };
     }
   }
 
   async getLastSettlement() {
-    const [rows] = await db.query(
-      `SELECT * FROM weekly_settlements ORDER BY settled_at DESC LIMIT 1`
-    );
-    return rows[0] || null;
+    return db.getLastSettlement();
   }
 
   async getSettlementHistory(limit = 10) {
-    const [rows] = await db.query(
-      `SELECT * FROM weekly_settlements ORDER BY settled_at DESC LIMIT ?`,
-      [limit]
-    );
-    return rows;
+    return db.getWeeklySettlements(limit);
   }
 }
 
