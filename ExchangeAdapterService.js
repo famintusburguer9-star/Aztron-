@@ -2,9 +2,12 @@ const logger = require("./LoggerService");
 const eventBus = require("./EventBus");
 const db = require("./DatabaseService");
 
-// 🔥 URLs CORRETAS PARA TESTNET
-const BINANCE_API_URL = "https://api.binance.com";  // API pública (preços)
-const BYBIT_API_URL = "https://api-testnet.bybit.com";  // 🔥 TESTNET da Bybit!
+// 🔥 URL CORRETA DA BYBIT TESTNET
+const BYBIT_API_URL = "https://api-testnet.bybit.com";
+
+// 🔥 SUAS CHAVES DA BYBIT TESTNET
+const BYBIT_API_KEY = "hBicpcF6fsEo7FS1xJ";
+const BYBIT_API_SECRET = "dmAOkQFYlhm3JngDlKgahjWxOif4Nv8HIKYy";
 
 // Preços de fallback (caso API falhe)
 const MOCK_PRICES = {
@@ -26,7 +29,6 @@ class ExchangeAdapterService {
     
     // Cache para preços
     this.cachedPrices = {
-      binance: {},
       bybit: {}
     };
     
@@ -37,11 +39,11 @@ class ExchangeAdapterService {
       exchange: this.exchange, 
       mode: this.mode,
       bybitUrl: BYBIT_API_URL,
-      status: "Usando TESTNET da Bybit com dados REAIS"
+      status: "Usando BYBIT TESTNET com chave"
     });
   }
 
-  // Simulação de preços para fallback (quando APIs falham)
+  // Simulação de preços para fallback (quando API falha)
   _simulatePrices() {
     setInterval(() => {
       for (const sym of Object.keys(this.prices)) {
@@ -61,11 +63,22 @@ class ExchangeAdapterService {
     }, 2000);
   }
 
-  // ==================== 🔥 API DA BYBIT TESTNET (COM SUA CHAVE) ====================
+  // ==================== 🔥 BYBIT TESTNET COM CHAVE ====================
 
   /**
-   * Busca preço REAL da Bybit TESTNET
-   * Usa as chaves que você criou em testnet.bybit.com
+   * Gera a assinatura para a requisição da Bybit
+   */
+  _generateSignature(params, secret) {
+    const crypto = require('crypto');
+    const queryString = Object.keys(params)
+      .sort()
+      .map(key => `${key}=${params[key]}`)
+      .join('&');
+    return crypto.createHmac('sha256', secret).update(queryString).digest('hex');
+  }
+
+  /**
+   * Busca preço REAL da Bybit TESTNET (com chave)
    * @param {string} symbol - Ex: "BTCUSDT"
    * @returns {Promise<number>}
    */
@@ -80,9 +93,27 @@ class ExchangeAdapterService {
       // 🔥 URL da TESTNET
       const url = `${BYBIT_API_URL}/v5/market/tickers?category=spot&symbol=${symbol}`;
       
+      const timestamp = Date.now().toString();
+      const params = {
+        api_key: BYBIT_API_KEY,
+        timestamp: timestamp,
+        recv_window: 5000
+      };
+      
+      const signature = this._generateSignature(params, BYBIT_API_SECRET);
+      
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 5000);
-      const response = await fetch(url, { signal: controller.signal });
+      
+      const response = await fetch(url, { 
+        signal: controller.signal,
+        headers: {
+          'X-BAPI-API-KEY': BYBIT_API_KEY,
+          'X-BAPI-TIMESTAMP': timestamp,
+          'X-BAPI-SIGN': signature,
+          'X-BAPI-RECV-WINDOW': '5000'
+        }
+      });
       clearTimeout(timeout);
       
       if (!response.ok) {
@@ -116,7 +147,22 @@ class ExchangeAdapterService {
   async getBybitVolatility(symbol) {
     try {
       const url = `${BYBIT_API_URL}/v5/market/tickers?category=spot&symbol=${symbol}`;
-      const response = await fetch(url);
+      const timestamp = Date.now().toString();
+      const params = {
+        api_key: BYBIT_API_KEY,
+        timestamp: timestamp,
+        recv_window: 5000
+      };
+      const signature = this._generateSignature(params, BYBIT_API_SECRET);
+      
+      const response = await fetch(url, {
+        headers: {
+          'X-BAPI-API-KEY': BYBIT_API_KEY,
+          'X-BAPI-TIMESTAMP': timestamp,
+          'X-BAPI-SIGN': signature,
+          'X-BAPI-RECV-WINDOW': '5000'
+        }
+      });
       const data = await response.json();
       
       if (data && data.result && data.result.list && data.result.list[0]) {
@@ -130,78 +176,55 @@ class ExchangeAdapterService {
     }
   }
 
-  // ==================== API PÚBLICA DA BINANCE ====================
-
   /**
-   * Busca preço REAL da Binance (API pública - NÃO precisa de chave)
-   * @param {string} symbol - Ex: "BTCUSDT"
-   * @returns {Promise<number>}
-   */
-  async getBinancePrice(symbol) {
-    try {
-      const cached = this.cachedPrices.binance[symbol];
-      if (cached && (Date.now() - cached.timestamp) < 5000) {
-        return cached.price;
-      }
-      
-      const url = `${BINANCE_API_URL}/api/v3/ticker/price?symbol=${symbol}`;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
-      const response = await fetch(url, { signal: controller.signal });
-      clearTimeout(timeout);
-      
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-      
-      const data = await response.json();
-      
-      if (data && data.price) {
-        const price = parseFloat(data.price);
-        this.cachedPrices.binance[symbol] = { price, timestamp: Date.now() };
-        return price;
-      }
-      throw new Error(`Preço não encontrado para ${symbol}`);
-    } catch (error) {
-      logger.error(`Erro ao buscar preço na Binance: ${error.message}`);
-      return null;
-    }
-  }
-
-  /**
-   * 🔥 DETECTA OPORTUNIDADE REAL DE ARBITRAGEM
-   * Compara preços REAIS entre Binance e Bybit TESTNET
+   * 🔥 GERA OPORTUNIDADE SIMULADA PARA TESTE
+   * (baseada na volatilidade real da Bybit)
    */
   async getArbitrageOpportunity(symbol = "BTCUSDT") {
     try {
-      const [binancePrice, bybitPrice] = await Promise.all([
-        this.getBinancePrice(symbol),
-        this.getBybitPrice(symbol)
-      ]);
-
-      if (!binancePrice || !bybitPrice) {
-        logger.debug(`Não foi possível obter preços para ${symbol}`);
+      const realPrice = await this.getBybitPrice(symbol);
+      
+      if (!realPrice) {
         return null;
       }
-
-      const spread = Math.abs((binancePrice - bybitPrice) / binancePrice) * 100;
       
-      let buyExchange = binancePrice < bybitPrice ? "BINANCE" : "BYBIT";
-      let sellExchange = binancePrice < bybitPrice ? "BYBIT" : "BINANCE";
+      // Pega volatilidade real para simular spread
+      const volatility = await this.getBybitVolatility(symbol);
+      
+      // Gera spread simulado baseado na volatilidade real (0.1% a 2%)
+      const simulatedSpread = Math.min(2.0, Math.max(0.1, volatility * 0.3 + Math.random() * 0.5));
+      
+      // Determina direção aleatória (mas realista)
+      const isBinanceHigher = Math.random() > 0.5;
+      
+      let binancePrice = realPrice;
+      let bybitPrice = realPrice;
+      
+      if (isBinanceHigher) {
+        binancePrice = realPrice * (1 + simulatedSpread / 100);
+      } else {
+        bybitPrice = realPrice * (1 + simulatedSpread / 100);
+      }
+      
+      const buyExchange = binancePrice < bybitPrice ? "BINANCE" : "BYBIT";
+      const sellExchange = binancePrice < bybitPrice ? "BYBIT" : "BINANCE";
 
       const result = {
         symbol,
         binancePrice,
         bybitPrice,
-        spread: parseFloat(spread.toFixed(4)),
+        spread: parseFloat(simulatedSpread.toFixed(4)),
         buyExchange,
         sellExchange,
-        isRealData: true,
+        isRealData: false,
+        isSimulated: true,
+        baseRealPrice: realPrice,
+        volatility: volatility,
         timestamp: Date.now()
       };
 
-      if (spread > 0.3) {
-        logger.info(`🎯 ARBITRAGEM REAL: ${symbol} | Spread: ${spread}% | Comprar em ${buyExchange} | Vender em ${sellExchange}`);
+      if (simulatedSpread > 0.5) {
+        logger.info(`🎯 SIMULAÇÃO ARBITRAGEM: ${symbol} | Spread: ${simulatedSpread}% | Comprar em ${buyExchange} | Vender em ${sellExchange} | Base real: $${realPrice}`);
       }
 
       return result;
@@ -279,10 +302,7 @@ class ExchangeAdapterService {
       this.tradeHistory.unshift(order);
       if (this.tradeHistory.length > 1000) this.tradeHistory.pop();
       
-      logger.info(`Paper trade executed: ${side} ${qty.toFixed(6)} ${symbol} @ $${execPrice.toFixed(2)} | Total: $${cost.toFixed(2)}`, { 
-        service: "ExchangeAdapter",
-        balance: { USDT: this.paperBalance.USDT.toFixed(2), [asset]: this.paperBalance[asset]?.toFixed(6) }
-      });
+      logger.info(`Paper trade executed: ${side} ${qty.toFixed(6)} ${symbol} @ $${execPrice.toFixed(2)} | Total: $${cost.toFixed(2)}`);
       
       eventBus.emit("exchange:order", order);
       return order;
