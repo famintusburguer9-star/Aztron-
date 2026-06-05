@@ -4,7 +4,7 @@ const logger = require("./LoggerService");
 const storage = require("./storage");
 const sentiment = require("./SentimentService");
 const marketCondition = require("./MarketConditionService");
-const memoryService = require("./MemoryService"); // NOVO: MemoryService
+const memoryService = require("./MemoryService");
 
 class AIZtronLearningService {
   constructor() {
@@ -23,6 +23,13 @@ class AIZtronLearningService {
     ]);
     this._thoughtIdx = 0;
     this._intervalId = null;
+    
+    // 🆕 LISTENER PARA APRENDER COM TRADES FECHADOS
+    eventBus.on("trade", (data) => {
+      if (data && data.action === "CLOSE" && data.trade) {
+        this.learnFromTrade(data.trade);
+      }
+    });
     
     logger.info("AIZtronLearningService initialized", { 
       service: "AILearning",
@@ -112,7 +119,6 @@ class AIZtronLearningService {
     if (this.tradeHistory.length > 200) this.tradeHistory.pop();
     storage.set("tradeHistory", this.tradeHistory.slice(0, 200));
     
-    // NOVO: Salva no MemoryService também
     memoryService.rememberTrade(historyEntry);
     memoryService.recordStrategyPerformance(trade.strategy || "unknown", wasWin, trade.pnl || 0);
     
@@ -154,7 +160,6 @@ class AIZtronLearningService {
       };
       this.patterns.push(newPattern);
       
-      // NOVO: Salva padrão no MemoryService se for promissor
       if (newPattern.winRate > 60) {
         memoryService.savePattern({
           name: newPattern.name,
@@ -206,7 +211,6 @@ class AIZtronLearningService {
     const patternKey = this._createPatternKey(conditions);
     let pattern = this.patterns.find(p => p.key === patternKey);
     
-    // NOVO: Se não achou padrão local, tenta no MemoryService
     if (!pattern) {
       const memoryPattern = memoryService.findSimilarPattern(conditions);
       if (memoryPattern) {
@@ -234,7 +238,6 @@ class AIZtronLearningService {
       };
     }
     
-    // NOVO: Pega melhor estratégia do MemoryService como fallback
     const bestStrategy = memoryService.getBestStrategy();
     if (bestStrategy && bestStrategy.winRate > 55) {
       return {
@@ -264,7 +267,6 @@ class AIZtronLearningService {
       .filter(p => p.totalTrades >= 5)
       .sort((a, b) => b.winRate - a.winRate)[0];
     
-    // NOVO: Adiciona estatísticas do MemoryService
     const memoryStats = memoryService.getStats ? memoryService.getStats() : {};
     
     return {
