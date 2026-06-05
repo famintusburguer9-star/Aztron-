@@ -26,7 +26,6 @@ class ExchangeAdapterService {
     setInterval(() => {
       for (const sym of Object.keys(this.prices)) {
         const t = this.prices[sym];
-        // Simulação mais realista com tendência e volatilidade
         const volatility = 0.0006;
         const trend = (Math.random() - 0.5) * 0.0002;
         const delta = (Math.random() - 0.498) * t.price * volatility + (t.price * trend);
@@ -34,7 +33,6 @@ class ExchangeAdapterService {
         t.bid = t.price - (t.price * t.spread / 100 / 2);
         t.ask = t.price + (t.price * t.spread / 100 / 2);
         
-        // Atualiza change24h a cada 5 minutos
         if (Math.random() < 0.01) {
           t.change24h = (Math.random() - 0.5) * 5;
         }
@@ -43,35 +41,145 @@ class ExchangeAdapterService {
     }, 2000);
   }
 
+  // ==================== 🆕 MÉTODOS PARA ARBITRAGEM REAL ====================
+
   /**
-   * Retorna ticker de um símbolo
+   * Busca o preço atual de um símbolo na Binance (via API Pública)
    * @param {string} symbol - Ex: "BTCUSDT"
-   * @returns {object} - Dados do ticker
+   * @returns {Promise<number>}
    */
+  async getBinancePrice(symbol) {
+    try {
+      const url = `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      const response = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeout);
+      const data = await response.json();
+      
+      if (data.price) {
+        return parseFloat(data.price);
+      }
+      throw new Error(`Preço não encontrado para ${symbol} na Binance`);
+    } catch (error) {
+      logger.error(`Erro ao buscar preço na Binance: ${error.message}`, { service: "ExchangeAdapter" });
+      return null;
+    }
+  }
+
+  /**
+   * Busca o preço atual de um símbolo na Bybit (via API Pública)
+   * @param {string} symbol - Ex: "BTCUSDT"
+   * @returns {Promise<number>}
+   */
+  async getBybitPrice(symbol) {
+    try {
+      const url = `https://api.bybit.com/v5/market/tickers?category=spot&symbol=${symbol}`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      const response = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeout);
+      const data = await response.json();
+      
+      if (data.result?.list?.[0]?.lastPrice) {
+        return parseFloat(data.result.list[0].lastPrice);
+      }
+      throw new Error(`Preço não encontrado para ${symbol} na Bybit`);
+    } catch (error) {
+      logger.error(`Erro ao buscar preço na Bybit: ${error.message}`, { service: "ExchangeAdapter" });
+      return null;
+    }
+  }
+
+  /**
+   * Compara preços entre Binance e Bybit para detectar arbitragem
+   * @param {string} symbol - Ex: "BTCUSDT"
+   * @returns {Promise<object>} - Spread e direção da arbitragem
+   */
+  async getArbitrageOpportunity(symbol) {
+    try {
+      const [binancePrice, bybitPrice] = await Promise.all([
+        this.getBinancePrice(symbol),
+        this.getBybitPrice(symbol)
+      ]);
+
+      if (!binancePrice || !bybitPrice) {
+        logger.debug(`Não foi possível obter preços para ${symbol}`, { service: "ExchangeAdapter" });
+        return null;
+      }
+
+      const spread = Math.abs((binancePrice - bybitPrice) / binancePrice) * 100;
+      
+      let action = null;
+      let buyExchange = null;
+      let sellExchange = null;
+      
+      if (binancePrice < bybitPrice) {
+        action = "BUY_ON_BINANCE_SELL_ON_BYBIT";
+        buyExchange = "BINANCE";
+        sellExchange = "BYBIT";
+      } else if (bybitPrice < binancePrice) {
+        action = "BUY_ON_BYBIT_SELL_ON_BINANCE";
+        buyExchange = "BYBIT";
+        sellExchange = "BINANCE";
+      }
+
+      const result = {
+        symbol,
+        binancePrice,
+        bybitPrice,
+        spread: parseFloat(spread.toFixed(2)),
+        action,
+        buyExchange,
+        sellExchange,
+        timestamp: Date.now()
+      };
+
+      if (spread > 0.1) {
+        logger.info(`📊 ARBITRAGEM: ${symbol} | Spread: ${spread}% | ${buyExchange}→${sellExchange}`, { service: "ExchangeAdapter" });
+      }
+
+      return result;
+    } catch (error) {
+      logger.error(`Erro na análise de arbitragem: ${error.message}`, { service: "ExchangeAdapter" });
+      return null;
+    }
+  }
+
+  /**
+   * Busca preços de múltiplos símbolos para arbitragem
+   * @param {string[]} symbols - Array de símbolos
+   * @returns {Promise<object[]>}
+   */
+  async getMultipleArbitrageOpportunities(symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT"]) {
+    const opportunities = [];
+    for (const symbol of symbols) {
+      const opp = await this.getArbitrageOpportunity(symbol);
+      if (opp && opp.spread > 0.3) {
+        opportunities.push(opp);
+      }
+      // Delay para não sobrecarregar as APIs
+      await this.sleep(500);
+    }
+    return opportunities.sort((a, b) => b.spread - a.spread);
+  }
+
+  // ==================== MÉTODOS EXISTENTES ====================
+
   getTicker(symbol) { 
     return this.prices[symbol] || null; 
   }
   
-  /**
-   * Retorna todos os tickers
-   * @returns {object} - Todos os preços
-   */
   getAllTickers() { 
     return this.prices; 
   }
 
-  /**
-   * Retorna preço atual de um símbolo (MÉTODO NOVO para os serviços)
-   * @param {string} symbol - Ex: "BTCUSDT", "ETHUSDT"
-   * @returns {Promise<number>} - Preço atual
-   */
   async getPrice(symbol) {
     try {
       const ticker = this.prices[symbol];
       if (ticker && ticker.price) {
         return ticker.price;
       }
-      // Fallback para símbolo não encontrado
       logger.warn(`Símbolo ${symbol} não encontrado, usando fallback`, { service: "ExchangeAdapter" });
       return symbol === "BTCUSDT" ? 65000 : symbol === "ETHUSDT" ? 3200 : 100;
     } catch (error) {
@@ -80,11 +188,6 @@ class ExchangeAdapterService {
     }
   }
 
-  /**
-   * Retorna preços de múltiplos símbolos de uma vez
-   * @param {string[]} symbols - Array de símbolos
-   * @returns {Promise<object>} - Objeto com preços
-   */
   async getPrices(symbols) {
     const result = {};
     for (const symbol of symbols) {
@@ -93,11 +196,6 @@ class ExchangeAdapterService {
     return result;
   }
 
-  /**
-   * Retorna bid/ask spread de um símbolo
-   * @param {string} symbol 
-   * @returns {object} - bid, ask, spreadPercent
-   */
   getSpread(symbol) {
     const ticker = this.prices[symbol];
     if (!ticker) return null;
@@ -109,14 +207,6 @@ class ExchangeAdapterService {
     };
   }
 
-  /**
-   * Executa ordem de compra/venda
-   * @param {string} symbol - Par de trading
-   * @param {string} side - "BUY" ou "SELL"
-   * @param {number} qty - Quantidade
-   * @param {number|null} price - Preço (opcional)
-   * @returns {Promise<object>} - Ordem executada
-   */
   async placeOrder(symbol, side, qty, price = null) {
     if (this.mode === "PAPER") {
       const ticker = this.prices[symbol];
@@ -164,22 +254,13 @@ class ExchangeAdapterService {
       return order;
     }
     
-    // LIVE mode - implementar com API real
     throw new Error("Live trading not implemented — configure API keys and set mode to LIVE");
   }
 
-  /**
-   * Retorna saldo atual da conta
-   * @returns {object} - Saldo por ativo
-   */
   getBalance() { 
     return { ...this.paperBalance }; 
   }
 
-  /**
-   * Retorna saldo em USDT (equivalente)
-   * @returns {Promise<number>} - Saldo total em USDT
-   */
   async getTotalBalance() {
     let total = this.paperBalance.USDT || 0;
     for (const [asset, amount] of Object.entries(this.paperBalance)) {
@@ -191,50 +272,33 @@ class ExchangeAdapterService {
     return total;
   }
 
-  /**
-   * Verifica se está conectado
-   * @returns {boolean}
-   */
   isConnected() { 
     return this.connected; 
   }
 
-  /**
-   * Altera exchange (BYBIT/BINANCE)
-   * @param {string} exchange 
-   */
   setExchange(exchange) { 
     this.exchange = exchange; 
     db.updateConfig({ exchange });
     logger.info(`Exchange changed to ${exchange}`, { service: "ExchangeAdapter" });
   }
 
-  /**
-   * Altera modo (PAPER/LIVE)
-   * @param {string} mode 
-   */
   setMode(mode) { 
     this.mode = mode; 
     db.updateConfig({ mode });
     logger.info(`Mode changed to ${mode}`, { service: "ExchangeAdapter" });
   }
 
-  /**
-   * Reseta o saldo PAPER (útil para backtest)
-   * @param {object} initialBalance - Saldo inicial
-   */
   resetPaperBalance(initialBalance = { USDT: 10000, BTC: 0, ETH: 0, BNB: 0, SOL: 0, XRP: 0 }) {
     this.paperBalance = { ...initialBalance };
     logger.info("Paper balance reset", { service: "ExchangeAdapter", balance: this.paperBalance });
   }
 
-  /**
-   * Retorna histórico de trades
-   * @param {number} limit - Limite de registros
-   * @returns {array}
-   */
   getTradeHistory(limit = 50) {
     return this.tradeHistory.slice(0, limit);
+  }
+
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 }
 
