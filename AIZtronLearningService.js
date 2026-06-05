@@ -6,13 +6,17 @@ const sentiment = require("./SentimentService");
 const marketCondition = require("./MarketConditionService");
 const memoryService = require("./MemoryService");
 
+// 🆕 NOVOS SERVIÇOS PARA INTEGRAÇÃO
+const capitalDistributor = require("./CapitalDistributorService");
+const learningBrain = require("./LearningBrainService");
+
 class AIZtronLearningService {
   constructor() {
     this.thoughts = storage.get("aiThoughts", []);
     this.sentimentHistory = storage.get("sentimentHistory", []);
     this.patterns = storage.get("learnedPatterns", []);
     this.tradeHistory = storage.get("tradeHistory", []);
-    this.version = "v4.3.0";
+    this.version = "v5.0.0";
     this.confidence = 84;
     this.status = "degraded";
     this.degradedReason = "Learning service initializing";
@@ -21,10 +25,33 @@ class AIZtronLearningService {
       { version: "v4.1", winRate: 69.8, adjustments: "RSI period 14→12, TP 3%→3.5%", date: "2026-05-25" },
       { version: "v4.0", winRate: 65.2, adjustments: "Added MACD confirmation filter", date: "2026-05-20" },
     ]);
+    
+    // 🆕 CONTROLE DE CAPITAL (PAPER MODE)
+    this.capitalAllocated = 0;
+    this.agentId = "trend"; // Este é o Trend Aztron
+    
     this._thoughtIdx = 0;
     this._intervalId = null;
+    this._isInitialized = false;
     
-    // 🆕 LISTENER PARA APRENDER COM TRADES FECHADOS
+    // 🆕 ESCUTA EVENTO DE ALOCAÇÃO DE CAPITAL
+    eventBus.on(`capital:${this.agentId}:allocated`, (data) => {
+      this.capitalAllocated = data.amount;
+      logger.info(`💰 AIZtron recebeu capital: $${this.capitalAllocated} (${data.mode} MODE)`, { service: "AILearning" });
+    });
+    
+    // 🆕 ESCUTA MELHORIAS DO LEARNING BRAIN
+    eventBus.on(`improvement:${this.agentId}`, (improvement) => {
+      this.applyImprovement(improvement);
+    });
+    
+    eventBus.on("improvement:broadcast", (improvement) => {
+      if (improvement.affectedAgents?.includes(this.agentId)) {
+        this.applyImprovement(improvement);
+      }
+    });
+    
+    // Escuta trades fechados para aprender
     eventBus.on("trade", (data) => {
       if (data && data.action === "CLOSE" && data.trade) {
         this.learnFromTrade(data.trade);
@@ -34,15 +61,24 @@ class AIZtronLearningService {
     logger.info("AIZtronLearningService initialized", { 
       service: "AILearning",
       patternsCount: this.patterns.length,
-      tradesCount: this.tradeHistory.length
+      tradesCount: this.tradeHistory.length,
+      version: this.version
     });
   }
 
   start() {
     this._intervalId = setInterval(() => this._generateThought(), 8000);
+    this._isInitialized = true;
     logger.info("AI Learning Service started", { service: "AILearning" });
     
+    // 🆕 VERIFICA SE JÁ TEM CAPITAL
     setTimeout(() => {
+      if (this.capitalAllocated === 0) {
+        logger.warn("Aguardando alocação de capital do CapitalDistributor...", { service: "AILearning" });
+      } else {
+        logger.info(`✅ AIZtron operacional com $${this.capitalAllocated} em PAPER MODE`, { service: "AILearning" });
+      }
+      
       this.status = "healthy";
       this.degradedReason = null;
       logger.info("AIZtronLearningService is now healthy", { service: "AILearning" });
@@ -51,28 +87,68 @@ class AIZtronLearningService {
 
   stop() { 
     if (this._intervalId) clearInterval(this._intervalId); 
+    this._isInitialized = false;
+  }
+
+  // 🆕 APLICA MELHORIAS RECEBIDAS DO LEARNING BRAIN
+  applyImprovement(improvement) {
+    logger.info(`🧠 AIZtron recebeu melhoria: ${improvement.recommendation}`, { service: "AILearning" });
+    
+    switch(improvement.recommendation) {
+      case "REDUZIR_TAMANHO_POSICAO_E_AGUARDAR_CONFIRMACAO":
+        this.confidence = Math.max(50, this.confidence - 10);
+        logger.info("📉 Confiança reduzida devido a padrão de reversão", { service: "AILearning" });
+        break;
+        
+      case "AUMENTAR_SENSIBILIDADE_SPREAD_E_VELOCIDADE":
+        this.confidence = Math.min(95, this.confidence + 5);
+        logger.info("📈 Confiança aumentada para oportunidades de arbitragem", { service: "AILearning" });
+        break;
+        
+      case "REVISAR_TODAS_POSICOES_E_CONSIDERAR_CONTRA_TREND":
+        this._generateThought();
+        eventBus.emit("learning:trend", {
+          type: "alert",
+          content: "Sentimento extremo detectado - revisando posições",
+          confidence: improvement.confidence,
+          priority: "high"
+        });
+        break;
+        
+      default:
+        logger.debug(`Melhoria recebida: ${improvement.recommendation}`, { service: "AILearning" });
+    }
+    
+    // Registra melhoria no histórico
+    memoryService.recordImprovement(improvement);
   }
 
   _generateThought() {
     let message = "";
+    
+    // 🆕 INCLUI INFORMAÇÃO DE CAPITAL
+    const capitalInfo = this.capitalAllocated > 0 
+      ? ` Capital disponível: $${this.capitalAllocated.toFixed(2)}.` 
+      : " Aguardando alocação de capital...";
     
     if (this.patterns.length > 0) {
       const bestPattern = this.patterns
         .sort((a, b) => b.winRate - a.winRate)[0];
       
       if (bestPattern && bestPattern.winRate > 65) {
-        message = `🧠 Pattern learned: ${bestPattern.name} has ${bestPattern.winRate}% win rate over ${bestPattern.totalTrades} trades.`;
+        message = `🧠 Pattern learned: ${bestPattern.name} has ${bestPattern.winRate}% win rate over ${bestPattern.totalTrades} trades.${capitalInfo}`;
       } else {
-        message = `🤔 Analyzing market. ${this.patterns.length} patterns in memory.`;
+        message = `🤔 Analyzing market. ${this.patterns.length} patterns in memory.${capitalInfo}`;
       }
     } else {
-      message = [
-        "Analyzing BTC momentum — RSI recovering from 38. EMA crossover imminent.",
-        "ETH showing divergence on MACD histogram. Reducing confidence for long positions.",
-        "Market sentiment index updated. Adjusting stop-loss tighter on new positions.",
-        "Deep pattern scan complete. Detected inverse H&S formation.",
-        `Fear & Greed: ${sentiment.getSentiment().fearGreedLabel}. Adjusting strategy.`
-      ][this._thoughtIdx % 5];
+      const messages = [
+        `Analyzing BTC momentum — RSI recovering from 38. EMA crossover imminent.${capitalInfo}`,
+        `ETH showing divergence on MACD histogram. Reducing confidence for long positions.${capitalInfo}`,
+        `Market sentiment index updated. Adjusting stop-loss tighter on new positions.${capitalInfo}`,
+        `Deep pattern scan complete. Detected inverse H&S formation.${capitalInfo}`,
+        `Fear & Greed: ${sentiment.getSentiment().fearGreedLabel}. Adjusting strategy.${capitalInfo}`
+      ];
+      message = messages[this._thoughtIdx % messages.length];
       this._thoughtIdx++;
     }
     
@@ -81,13 +157,65 @@ class AIZtronLearningService {
       message, 
       timestamp: new Date().toISOString(),
       patternsCount: this.patterns.length,
-      confidence: this.confidence
+      confidence: this.confidence,
+      capitalAvailable: this.capitalAllocated
     };
     
     this.thoughts.unshift(thought);
     if (this.thoughts.length > 50) this.thoughts.length = 50;
     storage.set("aiThoughts", this.thoughts.slice(0, 50));
     eventBus.emit("thought", thought);
+    
+    // 🆕 COMPARTILHA APRENDIZADO COM O LEARNING BRAIN
+    if (this.patterns.length > 0) {
+      this.shareLearning();
+    }
+  }
+
+  // 🆕 COMPARTILHA APRENDIZADO COM O CÉREBRO CENTRAL
+  shareLearning() {
+    const bestPattern = this.patterns
+      .filter(p => p.totalTrades >= 5)
+      .sort((a, b) => b.winRate - a.winRate)[0];
+    
+    if (bestPattern && bestPattern.winRate > 65) {
+      const learningData = {
+        type: "pattern",
+        content: `Padrão ${bestPattern.name} com ${bestPattern.winRate}% de acerto em ${bestPattern.totalTrades} trades`,
+        confidence: bestPattern.winRate / 100,
+        priority: bestPattern.winRate > 75 ? "high" : "normal",
+        data: {
+          patternName: bestPattern.name,
+          winRate: bestPattern.winRate,
+          totalTrades: bestPattern.totalTrades,
+          symbol: bestPattern.conditions?.symbol
+        }
+      };
+      
+      eventBus.emit(`learning:${this.agentId}`, learningData);
+      logger.debug(`📤 Aprendizado compartilhado: ${learningData.content.substring(0, 80)}`, { service: "AILearning" });
+    }
+  }
+
+  // 🆕 SOLICITA CAPITAL PARA EXECUTAR UM TRADE
+  async requestCapital(amount, reason) {
+    return new Promise((resolve) => {
+      capitalDistributor.handleRequest({
+        agentId: this.agentId,
+        amount: amount,
+        reason: reason,
+        callback: resolve
+      });
+    });
+  }
+
+  // 🆕 DEVOLVE CAPITAL NÃO UTILIZADO
+  returnCapital(amount, reason) {
+    eventBus.emit("capital:return", {
+      agentId: this.agentId,
+      amount: amount,
+      reason: reason
+    });
   }
 
   // ─── APRENDIZADO REAL ───────────────────────────────────────────────────────
@@ -124,9 +252,30 @@ class AIZtronLearningService {
     
     this._learnPattern(trade);
     
+    // 🆕 SE TEVE LUCRO, COMUNICA PARA O CAPITAL DISTRIBUTOR
+    if (wasWin && trade.pnl > 0) {
+      eventBus.emit("agent:profit", {
+        agentId: this.agentId,
+        amount: trade.pnl,
+        tradeId: trade.id
+      });
+      
+      // Atualiza capital alocado
+      this.capitalAllocated = capitalDistributor.getAgentBalance(this.agentId);
+    }
+    
+    // 🆕 COMPARTILHA RESULTADO COM O LEARNING BRAIN
+    eventBus.emit("trade:closed", {
+      agent: this.agentId,
+      profit: wasWin ? trade.pnl : 0,
+      loss: !wasWin ? Math.abs(trade.pnl) : 0,
+      id: trade.id
+    });
+    
     logger.info(`Learned from trade: ${trade.symbol} ${trade.action} ${wasWin ? "WIN" : "LOSS"}`, {
       service: "AILearning",
-      confidence: Math.round(this.confidence)
+      confidence: Math.round(this.confidence),
+      pnl: trade.pnl?.toFixed(2)
     });
     
     this._generateThought();
@@ -223,29 +372,39 @@ class AIZtronLearningService {
       }
     }
     
+    // 🆕 VERIFICA SE TEM CAPITAL SUFICIENTE
+    const hasCapital = this.capitalAllocated > (signal.estimatedCost || 100);
+    
     if (pattern && pattern.totalTrades >= 5) {
       const confidenceAdjustment = (pattern.winRate - 50) / 2;
       let predictedConfidence = Math.min(95, Math.max(5, 
         (signal.confidence || 70) + confidenceAdjustment
       ));
       
+      // Reduz confiança se não tiver capital
+      if (!hasCapital) predictedConfidence = Math.min(predictedConfidence, 30);
+      
       return {
         predictedWinRate: pattern.winRate,
         confidence: Math.round(predictedConfidence),
         patternUsed: pattern.name,
         basedOnTrades: pattern.totalTrades,
-        recommendation: pattern.winRate > 60 ? "FOLLOW" : "SKIP"
+        recommendation: pattern.winRate > 60 && hasCapital ? "FOLLOW" : "SKIP",
+        hasCapital: hasCapital,
+        availableCapital: this.capitalAllocated
       };
     }
     
     const bestStrategy = memoryService.getBestStrategy();
-    if (bestStrategy && bestStrategy.winRate > 55) {
+    if (bestStrategy && bestStrategy.winRate > 55 && hasCapital) {
       return {
         predictedWinRate: bestStrategy.winRate,
         confidence: Math.min(85, signal.confidence || 70),
         patternUsed: `best_strategy_${bestStrategy.name}`,
         basedOnTrades: bestStrategy.totalTrades,
-        recommendation: bestStrategy.winRate > 60 ? "FOLLOW" : "CAUTIOUS"
+        recommendation: bestStrategy.winRate > 60 ? "FOLLOW" : "CAUTIOUS",
+        hasCapital: hasCapital,
+        availableCapital: this.capitalAllocated
       };
     }
     
@@ -254,7 +413,9 @@ class AIZtronLearningService {
       confidence: signal.confidence || 70,
       patternUsed: null,
       basedOnTrades: 0,
-      recommendation: signal.confidence > 75 ? "FOLLOW_CAUTIOUS" : "WAIT"
+      recommendation: !hasCapital ? "NO_CAPITAL" : (signal.confidence > 75 ? "FOLLOW_CAUTIOUS" : "WAIT"),
+      hasCapital: hasCapital,
+      availableCapital: this.capitalAllocated
     };
   }
 
@@ -282,6 +443,7 @@ class AIZtronLearningService {
         trades: bestPattern.totalTrades
       } : null,
       currentConfidence: Math.round(this.confidence),
+      capitalAvailable: this.capitalAllocated,
       memoryStats: memoryStats
     };
   }
@@ -351,6 +513,12 @@ class AIZtronLearningService {
       const redditPosts = Math.floor(postsAnalyzed * 0.65);
       const twitterPosts = postsAnalyzed - redditPosts;
       
+      // 🆕 ADICIONA INFORMAÇÃO DE CAPITAL
+      const capitalInfo = {
+        available: this.capitalAllocated,
+        canTrade: this.capitalAllocated > 100
+      };
+      
       return {
         symbol: symbol.toUpperCase(),
         overall_sentiment: overallSentiment,
@@ -370,6 +538,7 @@ class AIZtronLearningService {
         },
         recommendation: recommendation,
         recommendation_reason: recommendationReason,
+        capital: capitalInfo,
         last_updated: new Date().toISOString(),
         recent_posts: posts
       };
@@ -482,6 +651,23 @@ class AIZtronLearningService {
     return this.sentimentHistory.filter(h => !symbol || h.symbol === symbol.toUpperCase());
   }
 
+  // 🆕 MÉTODO PARA MIGRAR PARA LIVE (quando estiver pronto)
+  async switchToLiveMode() {
+    logger.info("🔄 AIZtron migrando para LIVE MODE...", { service: "AILearning" });
+    
+    // Solicita confirmação de capital real
+    const result = await capitalDistributor.switchToLiveMode();
+    
+    if (result.success) {
+      this.version = "v5.0.0-live";
+      logger.info("✅ AIZtron agora opera em LIVE MODE", { service: "AILearning" });
+    } else {
+      logger.error("❌ Falha ao migrar para LIVE MODE", { service: "AILearning" });
+    }
+    
+    return result;
+  }
+
   // ─── GETTERS ────────────────────────────────────────────────────────────────
   
   getThoughts(limit = 20) { 
@@ -498,12 +684,22 @@ class AIZtronLearningService {
       learningHistory: this.learningHistory,
       learningStats: stats,
       patternsCount: this.patterns.length,
+      capitalAvailable: this.capitalAllocated,
+      mode: "PAPER", // ou "LIVE" quando migrar
       currentParams: db.getConfig() 
     }; 
   }
   
   getLearningHistory() { 
     return this.learningHistory; 
+  }
+
+  getCapitalInfo() {
+    return {
+      allocated: this.capitalAllocated,
+      agentId: this.agentId,
+      mode: "PAPER"
+    };
   }
 }
 
