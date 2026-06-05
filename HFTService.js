@@ -3,8 +3,9 @@ const eventBus = require("./EventBus");
 const logger = require("./LoggerService");
 const db = require("./DatabaseService");
 
-// 🆕 IMPORT PARA CAPITAL ROUTER (fluxo de lucro)
-const capitalRouter = require("./CapitalRouterService");
+// 🆕 IMPORT PARA INTEGRAÇÃO COM NOVOS SERVIÇOS
+const capitalDistributor = require("./CapitalDistributorService");
+const learningBrain = require("./LearningBrainService");
 
 // ─── CONFIGURAÇÕES DO HFT ─────────────────────────────────────────────────────
 const HFT_CONFIG = {
@@ -62,6 +63,11 @@ class HFTService {
     this._intervalId = null;
     this._priceHistory = {};
     
+    // 🆕 INTEGRAÇÃO COM CAPITAL DISTRIBUTOR
+    this.agentId = "hft";
+    this.capitalAllocated = 0;
+    this.dailyProfitToSend = 0; // Lucro diário a ser enviado para o Trend
+    
     // Inicializa histórico de preços
     HFT_CONFIG.SYMBOLS.forEach(sym => {
       this._priceHistory[sym] = [];
@@ -70,21 +76,179 @@ class HFTService {
     // Escuta ticks de preço
     eventBus.on("tick", (prices) => this._onTick(prices));
     
+    // 🆕 ESCUTA ALOCAÇÃO DE CAPITAL DO CAPITAL DISTRIBUTOR
+    eventBus.on(`capital:${this.agentId}:allocated`, (data) => {
+      this.capitalAllocated = data.amount;
+      logger.info(`💰 HFT recebeu capital: $${this.capitalAllocated} (${data.mode} MODE)`, { service: "HFT" });
+    });
+    
+    // 🆕 ESCUTA MELHORIAS DO LEARNING BRAIN
+    eventBus.on(`improvement:${this.agentId}`, (improvement) => {
+      this.applyImprovement(improvement);
+    });
+    
+    eventBus.on("improvement:broadcast", (improvement) => {
+      if (improvement.affectedAgents?.includes(this.agentId)) {
+        this.applyImprovement(improvement);
+      }
+    });
+    
     logger.info("HFTService initialized", { service: "HFT" });
   }
   
+  // 🆕 APLICA MELHORIAS RECEBIDAS DO LEARNING BRAIN
+  applyImprovement(improvement) {
+    logger.info(`🧠 HFT recebeu melhoria: ${improvement.recommendation}`, { service: "HFT" });
+    
+    switch(improvement.recommendation) {
+      case "AUMENTAR_SENSIBILIDADE_SPREAD_E_VELOCIDADE":
+        // Aumenta frequência de scans
+        if (this._intervalId) {
+          clearInterval(this._intervalId);
+          this._intervalId = setInterval(() => this._scan(), 3000); // 3 segundos
+          logger.info("⚡ HFT aumentou frequência de scan para 3 segundos", { service: "HFT" });
+        }
+        break;
+        
+      case "REDUZIR_TAMANHO_POSICAO_E_AGUARDAR_CONFIRMACAO":
+        // Reduz tamanho máximo de posição
+        HFT_CONFIG.MAX_POSITION_SIZE = Math.max(0.005, HFT_CONFIG.MAX_POSITION_SIZE * 0.7);
+        logger.info(`📉 HFT reduziu tamanho máximo de posição para ${HFT_CONFIG.MAX_POSITION_SIZE * 100}%`, { service: "HFT" });
+        break;
+        
+      default:
+        logger.debug(`Melhoria recebida: ${improvement.recommendation}`, { service: "HFT" });
+    }
+    
+    // Compartilha aprendizado
+    this.shareLearning();
+  }
+  
+  // 🆕 COMPARTILHA APRENDIZADO COM O LEARNING BRAIN
+  shareLearning() {
+    const recentTrades = this.tradeHistory.filter(t => t.status === "CLOSED").slice(-20);
+    const wins = recentTrades.filter(t => t.pnl > 0).length;
+    const winRate = recentTrades.length > 0 ? (wins / recentTrades.length) * 100 : 0;
+    
+    if (recentTrades.length >= 10 && winRate > 60) {
+      const learningData = {
+        type: "strategy_performance",
+        content: `HFT com ${winRate.toFixed(0)}% de acerto nos últimos ${recentTrades.length} trades - volatilidade favorável`,
+        confidence: winRate / 100,
+        priority: winRate > 70 ? "high" : "normal",
+        data: {
+          winRate: winRate,
+          totalTrades: recentTrades.length,
+          avgProfit: recentTrades.filter(t => t.pnl > 0).reduce((s, t) => s + t.pnl, 0) / wins || 0
+        }
+      };
+      
+      eventBus.emit(`learning:${this.agentId}`, learningData);
+      logger.debug(`📤 HFT compartilhou aprendizado: win rate ${winRate.toFixed(0)}%`, { service: "HFT" });
+    }
+  }
+  
+  // 🆕 SOLICITA CAPITAL PARA EXECUTAR UM TRADE
+  async requestCapital(amount, reason) {
+    return new Promise((resolve) => {
+      capitalDistributor.handleRequest({
+        agentId: this.agentId,
+        amount: amount,
+        reason: reason,
+        callback: resolve
+      });
+    });
+  }
+  
+  // 🆕 DEVOLVE CAPITAL NÃO UTILIZADO
+  returnCapital(amount, reason) {
+    eventBus.emit("capital:return", {
+      agentId: this.agentId,
+      amount: amount,
+      reason: reason
+    });
+  }
+  
+  // 🆕 ENVIA LUCRO DIÁRIO PARA O TREND (GASTÃO → SEMANAL)
+  async sendDailyProfitToTrend() {
+    if (this.dailyProfitToSend <= 0) {
+      logger.info(`📊 Nenhum lucro diário para enviar ao Trend ($${this.dailyProfitToSend})`, { service: "HFT" });
+      return;
+    }
+    
+    const amount = this.dailyProfitToSend;
+    logger.info(`🔄 HFT (Gastão) enviando lucro diário de $${amount} para o Trend (Semanal)`, { service: "HFT" });
+    
+    // Emite evento para o CapitalDistributor saber que o lucro saiu do HFT
+    eventBus.emit("capital:hft:dailyProfit", {
+      agentId: this.agentId,
+      amount: amount,
+      destination: "trend",
+      timestamp: Date.now()
+    });
+    
+    // Reseta o contador
+    this.dailyProfitToSend = 0;
+    
+    // Compartilha com o LearningBrain
+    eventBus.emit(`learning:${this.agentId}`, {
+      type: "daily_settlement",
+      content: `HFT enviou $${amount} de lucro diário para o Trend`,
+      confidence: 0.9,
+      priority: "normal",
+      data: { amount }
+    });
+  }
+  
   async initialize() {
-    logger.info("HFTService ready", { service: "HFT" });
-    return { success: true };
+    // Aguarda alocação de capital
+    let attempts = 0;
+    while (this.capitalAllocated === 0 && attempts < 30) {
+      await this.sleep(1000);
+      attempts++;
+    }
+    
+    if (this.capitalAllocated > 0) {
+      logger.info(`✅ HFTService ready com capital $${this.capitalAllocated}`, { service: "HFT" });
+    } else {
+      logger.warn("⚠️ HFTService iniciado sem capital alocado - aguardando CapitalDistributor", { service: "HFT" });
+    }
+    
+    return { success: true, capital: this.capitalAllocated };
+  }
+  
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
   
   start() {
     if (this.running) return { success: false, reason: "Already running" };
     
+    // Verifica se tem capital
+    if (this.capitalAllocated <= 0) {
+      logger.warn("HFTService não iniciado: aguardando alocação de capital", { service: "HFT" });
+      return { success: false, reason: "No capital allocated" };
+    }
+    
     this.running = true;
     this._intervalId = setInterval(() => this._scan(), 5000); // Escaneia a cada 5 segundos
-    logger.info("HFTService started", { service: "HFT" });
+    
+    // 🆕 AGENDA ENVIO DE LUCRO DIÁRIO (às 23:55)
+    this.scheduleDailyTransfer();
+    
+    logger.info(`🚀 HFTService started com $${this.capitalAllocated} em PAPER MODE`, { service: "HFT" });
     return { success: true };
+  }
+  
+  scheduleDailyTransfer() {
+    const now = new Date();
+    const night = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 55, 0);
+    const msUntilNight = night.getTime() - now.getTime();
+    
+    setTimeout(() => {
+      this.sendDailyProfitToTrend();
+      setInterval(() => this.sendDailyProfitToTrend(), 86400000);
+    }, msUntilNight > 0 ? msUntilNight : 86400000 + msUntilNight);
   }
   
   stop() {
@@ -107,6 +271,8 @@ class HFTService {
       dailyProfit: Math.round(this.dailyProfit * 100) / 100,
       dailyLoss: Math.round(this.dailyLoss * 100) / 100,
       netDaily: Math.round((this.dailyProfit - this.dailyLoss) * 100) / 100,
+      dailyProfitToSend: Math.round(this.dailyProfitToSend * 100) / 100,
+      capitalAvailable: this.capitalAllocated,
       tradesPerHour: this.tradesPerHour[hourKey] || 0,
       maxTradesPerHour: HFT_CONFIG.MAX_TRADES_PER_HOUR,
       activeStrategy: "Consensus (MeanRev + Breakout + Momentum)",
@@ -134,7 +300,9 @@ class HFTService {
       tradesToday: this.tradeHistory.length,
       dailyProfit: this.dailyProfit,
       dailyLoss: this.dailyLoss,
-      sharpeRatio: 1.2 // Placeholder
+      dailyProfitToSend: this.dailyProfitToSend,
+      capital: this.capitalAllocated,
+      sharpeRatio: 1.2
     };
   }
   
@@ -260,13 +428,12 @@ class HFTService {
     return { signal: best.signal, confidence: best.confidence };
   }
   
-  // ─── Calcula tamanho da posição (máximo 2% do capital por trade) ───────────
+  // ─── Calcula tamanho da posição (baseado no capital alocado) ───────────────
   _calculatePositionSize(symbol, price, confidence) {
-    const bal = exchange.getBalance();
-    const totalEquity = bal.USDT + Object.entries(bal).filter(([k]) => k !== "USDT").reduce((a, [k, v]) => {
-      const ticker = exchange.getTicker(`${k}USDT`);
-      return a + (ticker ? v * ticker.price : 0);
-    }, 0);
+    // Usa o capital alocado pelo CapitalDistributor
+    const totalEquity = this.capitalAllocated;
+    
+    if (totalEquity <= 0) return 0;
     
     // Base: 2% do equity
     let qty = (totalEquity * HFT_CONFIG.MAX_POSITION_SIZE) / price;
@@ -292,6 +459,14 @@ class HFTService {
   
   // ─── Executa trade ─────────────────────────────────────────────────────────
   async _executeTrade(signal, symbol, price, confidence) {
+    // 🆕 VERIFICA SE TEM CAPITAL SUFICIENTE
+    const estimatedCost = price * this._calculatePositionSize(symbol, price, confidence);
+    
+    if (estimatedCost > this.capitalAllocated) {
+      logger.warn(`HFT: Capital insuficiente para trade. Necessário $${estimatedCost}, disponível $${this.capitalAllocated}`, { service: "HFT" });
+      return null;
+    }
+    
     const qty = this._calculatePositionSize(symbol, price, confidence);
     if (qty <= 0) return null;
     
@@ -303,6 +478,14 @@ class HFTService {
       : price * (1 - HFT_CONFIG.TAKE_PROFIT);
     
     try {
+      // 🆕 SOLICITA CAPITAL ANTES DE EXECUTAR
+      const capitalRequest = await this.requestCapital(estimatedCost, `Trade: ${signal} ${symbol}`);
+      
+      if (!capitalRequest.success) {
+        logger.warn(`HFT: Trade rejeitado - ${capitalRequest.reason}`, { service: "HFT" });
+        return null;
+      }
+      
       const order = await exchange.placeOrder(symbol, signal, qty, price);
       
       const trade = {
@@ -311,6 +494,7 @@ class HFTService {
         side: signal,
         entryPrice: order.price,
         qty,
+        estimatedCost: estimatedCost,
         stopLoss: stopPrice,
         takeProfit: takeProfitPrice,
         confidence,
@@ -382,17 +566,36 @@ class HFTService {
         this.tradeHistory.unshift(trade);
         if (this.tradeHistory.length > 100) this.tradeHistory.pop();
         
-        // Atualiza contadores diários
-        if (trade.pnl > 0) this.dailyProfit += trade.pnl;
-        else this.dailyLoss += Math.abs(trade.pnl);
-        
-        // 🆕 ENVIA LUCRO PARA O CAPITAL ROUTER (SE FOR LUCRO)
+        // 🆕 ATUALIZA CAPITAL (devolve o que não foi usado + lucro/perda)
         if (trade.pnl > 0) {
-          logger.info(`[HFT] Lucro de $${trade.pnl} será enviado para o robô SWING via CapitalRouter`, { service: "HFT" });
-          // Envia o lucro para o CapitalRouterService (que vai repassar ao robô semanal)
-          capitalRouter.routeHFTProfit(trade.pnl, trade.id).catch(err => {
-            logger.error(`[HFT] Erro ao enviar lucro para CapitalRouter: ${err.message}`, { service: "HFT" });
+          this.dailyProfit += trade.pnl;
+          this.dailyProfitToSend += trade.pnl; // Acumula para enviar ao Trend
+          
+          // Comunica lucro para o CapitalDistributor recolher 30%
+          eventBus.emit("agent:profit", {
+            agentId: this.agentId,
+            amount: trade.pnl,
+            tradeId: trade.id
           });
+          
+          logger.info(`[HFT] Lucro de $${trade.pnl} acumulado para enviar ao Trend (total diário: $${this.dailyProfitToSend})`, { service: "HFT" });
+        } else {
+          this.dailyLoss += Math.abs(trade.pnl);
+          
+          // Comunica prejuízo
+          eventBus.emit("trade:closed", {
+            agent: this.agentId,
+            loss: Math.abs(trade.pnl),
+            id: trade.id
+          });
+        }
+        
+        // 🆕 DEVOLVE CAPITAL NÃO UTILIZADO
+        if (trade.estimatedCost && trade.pnl) {
+          const unusedOrReturned = trade.estimatedCost + (trade.pnl > 0 ? trade.pnl : trade.pnl);
+          if (unusedOrReturned > 0) {
+            this.returnCapital(unusedOrReturned, `Trade closed: ${trade.result}`);
+          }
         }
         
         // Salva no banco
@@ -410,7 +613,6 @@ class HFTService {
           closedAt: trade.closedAt
         });
         
-        // Salva no HFT específico (para métricas)
         if (db.addHFTTrade) {
           db.addHFTTrade(trade);
         }
@@ -429,12 +631,17 @@ class HFTService {
     }
   }
   
-  // ─── Escaneia oportunidades de trade (CORRIGIDO - AGORA É ASYNC) ────────────
-  async _scan() {  // 🔥 ADICIONADO "async" AQUI!
+  // ─── Escaneia oportunidades de trade ────────────────────────────────────────
+  async _scan() {
     if (!this.running) return;
     
     // Monitora trades abertos
     this._monitorTrades();
+    
+    // Verifica se tem capital
+    if (this.capitalAllocated <= 0) {
+      return;
+    }
     
     // Busca novas oportunidades
     for (const symbol of HFT_CONFIG.SYMBOLS) {
@@ -454,7 +661,6 @@ class HFTService {
       const hasOpenTrade = this.activeTrades.some(t => t.symbol === symbol);
       if (hasOpenTrade) continue;
       
-      // 🔥 AGORA O AWAIT FUNCIONA PORQUE O MÉTODO É ASYNC!
       await this._executeTrade(signal.signal, symbol, indicators.currentPrice, signal.confidence);
     }
   }
@@ -463,10 +669,26 @@ class HFTService {
     return this.tradeHistory.slice(0, limit);
   }
   
+  // 🆕 MÉTODO PARA MIGRAR PARA LIVE (quando estiver pronto)
+  async switchToLiveMode() {
+    logger.info("🔄 HFT migrando para LIVE MODE...", { service: "HFT" });
+    
+    const result = await capitalDistributor.switchToLiveMode();
+    
+    if (result.success) {
+      logger.info("✅ HFT agora opera em LIVE MODE", { service: "HFT" });
+    } else {
+      logger.error("❌ Falha ao migrar HFT para LIVE MODE", { service: "HFT" });
+    }
+    
+    return result;
+  }
+  
   // ─── Reseta o serviço (para novo dia) ──────────────────────────────────────
   resetDaily() {
     this.dailyProfit = 0;
     this.dailyLoss = 0;
+    this.dailyProfitToSend = 0;
     this.tradesPerHour = {};
     this.tradeHistory = [];
     logger.info("[HFT] Daily counters reset", { service: "HFT" });
