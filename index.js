@@ -637,7 +637,7 @@ async function main() {
   
   // 🆕 Inicializar serviços HFT
   await capitalRouter.initialize();
-  await hftService.initialize();
+  await hft.initialize();
   
   await orchestrator.init();
   await orchestrator.start();
@@ -645,7 +645,7 @@ async function main() {
   // 🆕 Auto-start HFT se configurado
   const config = db.getConfig();
   if (config.hftEnabled) {
-    await hftService.start();
+    await hft.start();
     logger.info("🚀 HFT Service auto-started", { service: "HFT" });
   }
 
