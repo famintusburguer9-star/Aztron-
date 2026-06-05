@@ -36,7 +36,7 @@ const marketConsciousness = require("./MarketConsciousnessService");
 const tokenomics = require("./TokenomicsService");
 
 // 🆕 HFT SERVICES
-const hftService = require("./HFTService");
+const hft = require("./HFTService");
 const capitalRouter = require("./CapitalRouterService");
 const weeklySettlement = require("./WeeklySettlementService");
 
