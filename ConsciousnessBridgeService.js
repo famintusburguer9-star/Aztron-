@@ -1,120 +1,194 @@
-const EventBus = require('./EventBus');
-const DatabaseService = require('./DatabaseService');
-const logger = require('./LoggerService');
+// ConsciousnessBridgeService.js - VERSÃO CORRIGIDA
+const EventBus = require("./EventBus");
+const db = require("./DatabaseService");
+const logger = require("./LoggerService");
 
 class ConsciousnessBridgeService {
   constructor() {
-    this.logger = logger.child({ service: '🧠 ConsciousnessBridge' });
-    this.db = new DatabaseService();
-    this.eventMemory = []; // memória dos últimos 500 eventos
-    this.insightHistory = [];
+    this.logger = logger;
+    this.db = db;
+    this.eventMemory = [];
+    this.learnings = [];
+    this.patterns = [];
   }
 
   start() {
-    this.logger.info('🧠 ConsciousnessBridgeService iniciado - O CÉREBRO ACORDOU');
+    this.logger.info("🧠 ConsciousnessBridgeService iniciado - SISTEMA DE APRENDIZADO COLETIVO ATIVO", { service: "ConsciousnessBridge" });
     
     this.listenToAllEvents();
-    
-    // Processa insights a cada 2 minutos
-    setInterval(() => this.processInsights(), 120000);
+    setInterval(() => this.distributeCollectiveLearning(), 60000);
+    setInterval(() => this.generateSynergyReport(), 3600000);
   }
 
   listenToAllEvents() {
-    // Estratégias (já existem)
-    EventBus.on('strategy:signal', (signal) => this.remember('strategy', signal));
-    EventBus.on('multi:strategy:decision', (decision) => this.remember('multiStrategy', decision));
+    const eventTypes = [
+      "strategy:signal", "strategy:profit", "strategy:loss",
+      "risk:alert", "risk:position:adjusted",
+      "sentiment:update", "sentiment:extreme",
+      "market:condition:change", "market:volatility",
+      "arbitrage:opportunity", "arbitrage:executed", "arbitrage:failed",
+      "capital:allocated", "capital:total:updated",
+      "trade:executed", "trade:profit", "trade:loss"
+    ];
     
-    // Risco (já existem)
-    EventBus.on('risk:alert', (alert) => this.remember('risk', alert));
-    EventBus.on('risk:position:adjusted', (adj) => this.remember('risk', adj));
-    
-    // Sentimento (já existe)
-    EventBus.on('sentiment:update', (sentiment) => this.remember('sentiment', sentiment));
-    
-    // Mercado (já existe)
-    EventBus.on('market:condition:change', (condition) => this.remember('market', condition));
-    
-    // IA (já existe)
-    EventBus.on('ai:learning:update', (update) => this.remember('ai', update));
-    
-    // Novos serviços
-    EventBus.on('arbitrage:opportunity', (opp) => this.remember('arbitrage', opp));
-    EventBus.on('capital:allocated', (cap) => this.remember('capital', cap));
-    EventBus.on('capital:total:updated', (total) => this.remember('capital', total));
-  }
-
-  remember(source, data) {
-    this.eventMemory.unshift({
-      source,
-      data,
-      timestamp: Date.now()
+    eventTypes.forEach(eventType => {
+      EventBus.on(eventType, (data) => {
+        this.collectEvent(eventType, data);
+        this.detectPatterns(eventType, data);
+      });
     });
-    
-    // Mantém só últimas 500 memórias
-    if (this.eventMemory.length > 500) {
-      this.eventMemory.pop();
-    }
   }
 
-  processInsights() {
-    const insights = [];
-    
-    // Insight 1: Sentimento + Mercado alinhados?
-    const lastSentiment = this.eventMemory.find(e => e.source === 'sentiment');
-    const lastMarket = this.eventMemory.find(e => e.source === 'market');
-    
-    if (lastSentiment && lastMarket) {
-      const sentimentScore = lastSentiment.data.fearGreedIndex || 50;
-      const marketTrend = lastMarket.data.trend || 'neutral';
+  collectEvent(type, data) {
+    this.eventMemory.unshift({ type, data, timestamp: Date.now() });
+    if (this.eventMemory.length > 1000) this.eventMemory.pop();
+  }
+
+  detectPatterns(eventType, data) {
+    if (eventType === "strategy:loss") {
+      const recentLosses = this.eventMemory.filter(e => 
+        e.type === "strategy:loss" && e.timestamp > Date.now() - 3600000
+      ).length;
       
-      if (sentimentScore > 65 && marketTrend === 'uptrend') {
-        insights.push({
-          type: 'alignment',
-          message: '📈 Sentimento altista + Mercado em uptrend = Oportunidade de compra',
-          confidence: 85,
-          recommendedAction: 'LONG'
-        });
-      } else if (sentimentScore < 35 && marketTrend === 'downtrend') {
-        insights.push({
-          type: 'alignment',
-          message: '📉 Sentimento baixista + Mercado em downtrend = Evitar compras',
-          confidence: 80,
-          recommendedAction: 'SHORT_OR_HOLD'
-        });
+      if (recentLosses >= 3) {
+        const sentiment = this.getLatest("sentiment:update");
+        if (sentiment && sentiment.fearGreedIndex < 30) {
+          this.registerPattern({
+            name: "fear_loss_cycle",
+            description: "Perdas consecutivas em momento de medo extremo",
+            recommendation: "REDUCE_ALL_POSITIONS_BY_50",
+            confidence: 85
+          });
+        }
       }
     }
     
-    // Insight 2: Arbitragem + Sentimento
-    const lastArbitrage = this.eventMemory.find(e => e.source === 'arbitrage');
-    if (lastArbitrage && lastSentiment && lastSentiment.data.fearGreedIndex < 40) {
+    if (eventType === "arbitrage:opportunity") {
+      const sentiment = this.getLatest("sentiment:update");
+      if (sentiment && sentiment.fearGreedIndex > 60) {
+        this.registerPattern({
+          name: "greed_arbitrage",
+          description: "Arbitragem disponível em momento de ganância",
+          recommendation: "INCREASE_ARBITRAGE_LIMIT_BY_20",
+          confidence: 70
+        });
+      }
+    }
+  }
+
+  registerPattern(pattern) {
+    const exists = this.patterns.some(p => p.name === pattern.name && 
+      (Date.now() - p.timestamp) < 3600000);
+    
+    if (!exists) {
+      this.patterns.push({ ...pattern, timestamp: Date.now() });
+      this.logger.info(`📐 Novo padrão detectado: ${pattern.name}`);
+      
+      this.distributeLearning({
+        from: "ConsciousnessBridge",
+        type: "pattern_discovery",
+        message: pattern.description,
+        recommendation: pattern.recommendation,
+        confidence: pattern.confidence
+      });
+    }
+  }
+
+  distributeCollectiveLearning() {
+    const insights = [];
+    
+    const recentArbitrage = this.getLatest("arbitrage:opportunity", 5);
+    const recentSentiment = this.getLatest("sentiment:update");
+    
+    if (recentArbitrage && recentSentiment && recentSentiment.fearGreedIndex < 35) {
       insights.push({
-        type: 'opportunity',
-        message: '💡 Arbitragem disponível em momento de medo - maior chance de sucesso',
-        confidence: 70,
-        recommendedAction: 'EXECUTE_ARBITRAGE'
+        to: "ArbitrageService",
+        message: "Oportunidade de arbitragem em momento de medo - spreadThreshold pode ser reduzido",
+        type: "market_opportunity"
       });
     }
     
-    // Emite insights encontrados
-    insights.forEach(insight => {
-      this.insightHistory.push(insight);
-      EventBus.emit('consciousness:insight', insight);
-      this.logger.info(`🧠 Insight: ${insight.message}`);
+    const recentLosses = this.eventMemory.filter(e => 
+      (e.type === "strategy:loss" || e.type === "trade:loss") &&
+      e.timestamp > Date.now() - 1800000
+    ).length;
+    
+    if (recentLosses >= 5) {
+      insights.push({
+        to: null,
+        message: `ALERTA: ${recentLosses} perdas nos últimos 30 minutos`,
+        type: "risk_warning",
+        recommendation: "REDUCE_RISK"
+      });
+    }
+    
+    const highConfidencePatterns = this.patterns.filter(p => 
+      p.confidence > 70 && (Date.now() - p.timestamp) < 7200000
+    );
+    
+    highConfidencePatterns.forEach(pattern => {
+      insights.push({
+        to: null,
+        message: `Padrão ativo: ${pattern.description}`,
+        type: "pattern_active",
+        recommendation: pattern.recommendation
+      });
     });
     
-    // Salva no banco
-    if (insights.length > 0) {
-      this.db.saveData('insights', insights);
+    insights.forEach(insight => {
+      this.distributeLearning({
+        from: "ConsciousnessBridge",
+        to: insight.to,
+        type: insight.type,
+        message: insight.message,
+        recommendation: insight.recommendation
+      });
+    });
+  }
+
+  distributeLearning(learning) {
+    EventBus.emit("consciousness:learning", learning);
+    if (learning.to) {
+      EventBus.emit(`${learning.to.toLowerCase()}:learning`, learning);
     }
+    this.learnings.push(learning);
+    if (this.learnings.length > 500) this.learnings.shift();
   }
 
-  getMemory() {
-    return this.eventMemory;
+  generateSynergyReport() {
+    const report = {
+      timestamp: Date.now(),
+      patternsFound: this.patterns.length,
+      totalLearnings: this.learnings.length,
+      recommendations: this.generateRecommendations()
+    };
+    EventBus.emit("consciousness:report", report);
+    this.logger.info(`📊 Relatório de sinergia gerado: ${report.patternsFound} padrões ativos`);
   }
 
-  stop() {
-    this.logger.info('ConsciousnessBridgeService parado');
+  getLatest(eventType, maxAge = 60000) {
+    const found = this.eventMemory.find(e => 
+      e.type === eventType && (Date.now() - e.timestamp) < maxAge
+    );
+    return found ? found.data : null;
   }
+
+  generateRecommendations() {
+    const recommendations = [];
+    const recentPatterns = this.patterns.filter(p => 
+      (Date.now() - p.timestamp) < 3600000
+    );
+    if (recentPatterns.length > 0) {
+      recommendations.push({
+        priority: "HIGH",
+        action: recentPatterns[0].recommendation,
+        reason: recentPatterns[0].description
+      });
+    }
+    return recommendations;
+  }
+
+  stop() { this.logger.info("ConsciousnessBridgeService parado"); }
 }
 
 module.exports = new ConsciousnessBridgeService();
