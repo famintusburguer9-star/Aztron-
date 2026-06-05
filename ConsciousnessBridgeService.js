@@ -1,4 +1,3 @@
-// ConsciousnessBridgeService.js - VERSÃO CORRIGIDA
 const EventBus = require("./EventBus");
 const db = require("./DatabaseService");
 const logger = require("./LoggerService");
