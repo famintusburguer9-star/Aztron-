@@ -5,6 +5,7 @@ class MemoryService {
     this.patterns = [];      // Padrões aprendidos que deram certo
     this.strategies = [];    // Performance por estratégia
     this.tradeMemory = [];   // Memória de trades passados
+    this.improvements = [];  // 🆕 Histórico de melhorias recebidas
     this.db = null;          // Será injetado depois
     this._initialized = false;
     logger.info("MemoryService initialized", { service: "Memory" });
@@ -23,7 +24,8 @@ class MemoryService {
       service: "Memory",
       patterns: this.patterns.length,
       strategies: this.strategies.length,
-      trades: this.tradeMemory.length
+      trades: this.tradeMemory.length,
+      improvements: this.improvements.length
     });
   }
 
@@ -40,10 +42,48 @@ class MemoryService {
         this.patterns = saved.patterns || [];
         this.strategies = saved.strategies || [];
         this.tradeMemory = saved.tradeMemory || [];
+        this.improvements = saved.improvements || [];
       }
     } catch (error) {
       logger.error(`Failed to load memory: ${error.message}`, { service: "Memory" });
     }
+  }
+
+  // 🆕 MÉTODO ADICIONADO: Registra melhoria recebida do LearningBrain
+  recordImprovement(improvement) {
+    if (!improvement) return;
+    
+    const newImprovement = {
+      id: `imp_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      from: improvement.from || "unknown",
+      type: improvement.type,
+      message: improvement.message,
+      recommendation: improvement.recommendation,
+      confidence: improvement.confidence,
+      receivedAt: new Date().toISOString(),
+      applied: false
+    };
+    
+    this.improvements.unshift(newImprovement);
+    if (this.improvements.length > 200) this.improvements.pop();
+    
+    this._persist();
+    logger.debug(`Improvement recorded: ${improvement.recommendation?.substring(0, 50) || improvement.message?.substring(0, 50)}`, { service: "Memory" });
+  }
+
+  // 🆕 MARCA melhoria como aplicada
+  markImprovementApplied(id) {
+    const improvement = this.improvements.find(i => i.id === id);
+    if (improvement) {
+      improvement.applied = true;
+      improvement.appliedAt = new Date().toISOString();
+      this._persist();
+    }
+  }
+
+  // 🆕 OBTÉM melhorias pendentes
+  getPendingImprovements(limit = 10) {
+    return this.improvements.filter(i => !i.applied).slice(0, limit);
   }
 
   // Salva um padrão que deu certo
@@ -152,7 +192,8 @@ class MemoryService {
       this.db.saveMemory({
         patterns: this.patterns,
         strategies: this.strategies,
-        tradeMemory: this.tradeMemory
+        tradeMemory: this.tradeMemory,
+        improvements: this.improvements
       });
     } catch (error) {
       logger.error(`Failed to persist memory: ${error.message}`, { service: "Memory" });
@@ -162,11 +203,14 @@ class MemoryService {
   // Retorna estatísticas da memória
   getStats() {
     const bestStrategy = this.getBestStrategy();
+    const pendingImprovements = this.improvements.filter(i => !i.applied).length;
     
     return {
       patternsCount: this.patterns.length,
       strategiesCount: this.strategies.length,
       tradesMemoryCount: this.tradeMemory.length,
+      improvementsCount: this.improvements.length,
+      pendingImprovements: pendingImprovements,
       bestStrategy: bestStrategy ? {
         name: bestStrategy.name,
         winRate: bestStrategy.winRate,
