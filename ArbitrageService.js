@@ -16,7 +16,7 @@ class ArbitrageService {
     this.dailyProfit = 0;
     this.dailyLoss = 0;
     
-    // 🔥 CONTROLE DE TEMPO PARA EVITAR LOOP
+    // CONTROLE DE TEMPO PARA EVITAR LOOP
     this.lastScanTime = 0;
     this.lastTradeTime = 0;
     this.scanInterval = 30000; // 30 segundos entre scans
@@ -117,7 +117,7 @@ class ArbitrageService {
       try {
         const now = Date.now();
         
-        // 🔥 CONTROLE DE TEMPO: só escaneia a cada 30 segundos
+        // CONTROLE DE TEMPO: só escaneia a cada 30 segundos
         if (now - this.lastScanTime < this.scanInterval) {
           await this.sleep(1000);
           continue;
@@ -125,7 +125,7 @@ class ArbitrageService {
         
         this.lastScanTime = now;
         
-        // 🔥 CONTROLE DE COOLDOWN entre trades
+        // CONTROLE DE COOLDOWN entre trades
         if (now - this.lastTradeTime < this.tradeCooldown) {
           continue;
         }
@@ -142,7 +142,9 @@ class ArbitrageService {
 
   async scanArbitrageOpportunities() {
     try {
-      // 🔥 SÓ ESCANEIA SE TIVER CAPITAL
+      const now = Date.now(); // 🔥 LINHA ADICIONADA - CORREÇÃO DO ERRO
+      
+      // SÓ ESCANEIA SE TIVER CAPITAL
       if (this.capitalAllocated <= 0) return;
       
       const btcPrice = await this.exchange.getPrice("BTCUSDT");
@@ -154,14 +156,14 @@ class ArbitrageService {
       
       const adjustedThreshold = this.learningParams.spreadThreshold * this.learningParams.riskMultiplier;
       
-      // 🔥 SÓ EXECUTA SE O SPREAD FOR BOM E TIVER CAPITAL SUFICIENTE
+      // SÓ EXECUTA SE O SPREAD FOR BOM E TIVER CAPITAL SUFICIENTE
       if (simulatedSpread > adjustedThreshold && this.capitalAllocated > 100) {
         const estimatedProfit = this.capitalAllocated * simulatedSpread / 100;
         const capitalRequired = Math.min(this.capitalAllocated, this.maxPositionPerTrade);
         
         this.logger.info(`💰 Oportunidade de arbitragem: ${simulatedSpread.toFixed(2)}% | Lucro estimado: $${estimatedProfit.toFixed(2)}`);
         
-        // 🔥 REGISTRA OPORTUNIDADE SEM EXECUTAR TRADE AUTOMÁTICO
+        // REGISTRA OPORTUNIDADE
         const opportunity = {
           id: `arb_${Date.now()}`,
           spread: parseFloat(simulatedSpread.toFixed(2)),
@@ -176,7 +178,7 @@ class ArbitrageService {
         
         EventBus.emit("arbitrage:opportunity", opportunity);
         
-        // 🔥 SÓ EXECUTA UM TRADE POR VEZ (limite de 1 a cada 60 segundos)
+        // SÓ EXECUTA UM TRADE POR VEZ (limite de 1 a cada 60 segundos)
         if (this.lastTradeTime === 0 || (Date.now() - this.lastTradeTime >= this.tradeCooldown)) {
           await this.executeTrade(opportunity);
         }
@@ -186,7 +188,7 @@ class ArbitrageService {
     }
   }
 
-  // 🔥 NOVO MÉTODO: EXECUTA TRADE COM CONTROLE
+  // EXECUTA TRADE COM CONTROLE
   async executeTrade(opportunity) {
     const now = Date.now();
     
@@ -205,7 +207,7 @@ class ArbitrageService {
     
     this.lastTradeTime = now;
     
-    // 🔥 SIMULA RESULTADO DO TRADE (APENAS 1 VEZ)
+    // SIMULA RESULTADO DO TRADE (APENAS 1 VEZ)
     const isWin = Math.random() < 0.65; // 65% de chance de lucro
     const profit = isWin ? opportunity.estimatedProfit * (0.5 + Math.random() * 0.5) : -opportunity.estimatedProfit * 0.5;
     
