@@ -2,6 +2,11 @@ const logger = require("./LoggerService");
 const eventBus = require("./EventBus");
 const db = require("./DatabaseService");
 
+// URLs das APIs Públicas (funcionam SEM chave)
+const BINANCE_API_URL = "https://api.binance.com";
+const BYBIT_API_URL = "https://api.bybit.com";
+
+// Preços de fallback (simulação)
 const MOCK_PRICES = {
   BTCUSDT: { price: 69340.5, bid: 69335.0, ask: 69346.0, spread: 0.02, volume24h: 28450000000, high24h: 71200, low24h: 68100, change24h: 1.8 },
   ETHUSDT: { price: 3284.2, bid: 3283.5, ask: 3284.9, spread: 0.04, volume24h: 14200000000, high24h: 3350, low24h: 3200, change24h: 1.2 },
@@ -16,12 +21,26 @@ class ExchangeAdapterService {
     this.mode = db.getConfig().mode || "PAPER";
     this.connected = true;
     this.prices = { ...MOCK_PRICES };
-    this.paperBalance = { USDT: 41500, BTC: 0.312, ETH: 1.85, BNB: 5.4, SOL: 12.5, XRP: 850 };
+    this.paperBalance = { USDT: 20000, BTC: 0, ETH: 0, BNB: 0, SOL: 0, XRP: 0 };
     this.tradeHistory = [];
+    
+    // Cache para preços reais
+    this.cachedPrices = {
+      binance: {},
+      bybit: {}
+    };
+    
     this._simulatePrices();
-    logger.info("ExchangeAdapterService initialized", { service: "ExchangeAdapter", exchange: this.exchange, mode: this.mode });
+    
+    logger.info("ExchangeAdapterService initialized", { 
+      service: "ExchangeAdapter", 
+      exchange: this.exchange, 
+      mode: this.mode,
+      arbitrageMode: "BINANCE vs BYBIT (REAL PRICES)"
+    });
   }
 
+  // Simulação de preços para fallback (quando APIs falham)
   _simulatePrices() {
     setInterval(() => {
       for (const sym of Object.keys(this.prices)) {
@@ -41,114 +60,142 @@ class ExchangeAdapterService {
     }, 2000);
   }
 
-  // ==================== 🆕 MÉTODOS PARA ARBITRAGEM REAL ====================
+  // ==================== 🔥 APIs PÚBLICAS (SEM CHAVE) ====================
 
   /**
-   * Busca o preço atual de um símbolo na Binance (via API Pública)
+   * Busca preço REAL da Binance (API pública - NÃO precisa de chave)
    * @param {string} symbol - Ex: "BTCUSDT"
    * @returns {Promise<number>}
    */
   async getBinancePrice(symbol) {
     try {
-      const url = `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`;
+      // Verifica cache (atualizado a cada 5 segundos)
+      const cached = this.cachedPrices.binance[symbol];
+      if (cached && (Date.now() - cached.timestamp) < 5000) {
+        return cached.price;
+      }
+      
+      const url = `${BINANCE_API_URL}/api/v3/ticker/price?symbol=${symbol}`;
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 5000);
       const response = await fetch(url, { signal: controller.signal });
       clearTimeout(timeout);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      
       const data = await response.json();
       
-      if (data.price) {
-        return parseFloat(data.price);
+      if (data && data.price) {
+        const price = parseFloat(data.price);
+        // Atualiza cache
+        this.cachedPrices.binance[symbol] = { price, timestamp: Date.now() };
+        return price;
       }
-      throw new Error(`Preço não encontrado para ${symbol} na Binance`);
+      throw new Error(`Preço não encontrado para ${symbol}`);
     } catch (error) {
-      logger.error(`Erro ao buscar preço na Binance: ${error.message}`, { service: "ExchangeAdapter" });
+      logger.error(`Erro ao buscar preço na Binance: ${error.message}`);
       return null;
     }
   }
 
   /**
-   * Busca o preço atual de um símbolo na Bybit (via API Pública)
+   * Busca preço REAL da Bybit (API pública - NÃO precisa de chave)
    * @param {string} symbol - Ex: "BTCUSDT"
    * @returns {Promise<number>}
    */
   async getBybitPrice(symbol) {
     try {
-      const url = `https://api.bybit.com/v5/market/tickers?category=spot&symbol=${symbol}`;
+      // Verifica cache (atualizado a cada 5 segundos)
+      const cached = this.cachedPrices.bybit[symbol];
+      if (cached && (Date.now() - cached.timestamp) < 5000) {
+        return cached.price;
+      }
+      
+      const url = `${BYBIT_API_URL}/v5/market/tickers?category=spot&symbol=${symbol}`;
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 5000);
       const response = await fetch(url, { signal: controller.signal });
       clearTimeout(timeout);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      
       const data = await response.json();
       
-      if (data.result?.list?.[0]?.lastPrice) {
-        return parseFloat(data.result.list[0].lastPrice);
+      if (data && data.result && data.result.list && data.result.list[0]) {
+        const price = parseFloat(data.result.list[0].lastPrice);
+        // Atualiza cache
+        this.cachedPrices.bybit[symbol] = { price, timestamp: Date.now() };
+        return price;
       }
-      throw new Error(`Preço não encontrado para ${symbol} na Bybit`);
+      throw new Error(`Preço não encontrado para ${symbol}`);
     } catch (error) {
-      logger.error(`Erro ao buscar preço na Bybit: ${error.message}`, { service: "ExchangeAdapter" });
+      logger.error(`Erro ao buscar preço na Bybit: ${error.message}`);
       return null;
     }
   }
 
   /**
-   * Compara preços entre Binance e Bybit para detectar arbitragem
+   * 🔥 DETECTA OPORTUNIDADE REAL DE ARBITRAGEM
+   * Compara preços REAIS entre Binance e Bybit
    * @param {string} symbol - Ex: "BTCUSDT"
-   * @returns {Promise<object>} - Spread e direção da arbitragem
+   * @returns {Promise<object>}
    */
-  async getArbitrageOpportunity(symbol) {
+  async getArbitrageOpportunity(symbol = "BTCUSDT") {
     try {
+      // Busca preços em paralelo
       const [binancePrice, bybitPrice] = await Promise.all([
         this.getBinancePrice(symbol),
         this.getBybitPrice(symbol)
       ]);
 
+      // Se não conseguiu preços reais, retorna null (não usa simulação)
       if (!binancePrice || !bybitPrice) {
-        logger.debug(`Não foi possível obter preços para ${symbol}`, { service: "ExchangeAdapter" });
+        logger.debug(`Não foi possível obter preços reais para ${symbol}`, { 
+          binance: !!binancePrice, 
+          bybit: !!bybitPrice 
+        });
         return null;
       }
 
+      // Calcula spread REAL
       const spread = Math.abs((binancePrice - bybitPrice) / binancePrice) * 100;
       
-      let action = null;
-      let buyExchange = null;
-      let sellExchange = null;
-      
-      if (binancePrice < bybitPrice) {
-        action = "BUY_ON_BINANCE_SELL_ON_BYBIT";
-        buyExchange = "BINANCE";
-        sellExchange = "BYBIT";
-      } else if (bybitPrice < binancePrice) {
-        action = "BUY_ON_BYBIT_SELL_ON_BINANCE";
-        buyExchange = "BYBIT";
-        sellExchange = "BINANCE";
-      }
+      // Determina direção da arbitragem
+      let buyExchange = binancePrice < bybitPrice ? "BINANCE" : "BYBIT";
+      let sellExchange = binancePrice < bybitPrice ? "BYBIT" : "BINANCE";
+      let action = `BUY_ON_${buyExchange}_SELL_ON_${sellExchange}`;
 
       const result = {
         symbol,
         binancePrice,
         bybitPrice,
-        spread: parseFloat(spread.toFixed(2)),
+        spread: parseFloat(spread.toFixed(4)),
         action,
         buyExchange,
         sellExchange,
+        isRealData: true,
         timestamp: Date.now()
       };
 
-      if (spread > 0.1) {
-        logger.info(`📊 ARBITRAGEM: ${symbol} | Spread: ${spread}% | ${buyExchange}→${sellExchange}`, { service: "ExchangeAdapter" });
+      // Log apenas quando spread for significativo (acima de 0.3%)
+      if (spread > 0.3) {
+        logger.info(`🎯 ARBITRAGEM DETECTADA: ${symbol} | Spread: ${spread}% | Comprar em ${buyExchange} | Vender em ${sellExchange}`);
       }
 
       return result;
     } catch (error) {
-      logger.error(`Erro na análise de arbitragem: ${error.message}`, { service: "ExchangeAdapter" });
+      logger.error(`Erro na análise de arbitragem: ${error.message}`);
       return null;
     }
   }
 
   /**
-   * Busca preços de múltiplos símbolos para arbitragem
-   * @param {string[]} symbols - Array de símbolos
+   * Busca oportunidades em múltiplos símbolos
+   * @param {string[]} symbols 
    * @returns {Promise<object[]>}
    */
   async getMultipleArbitrageOpportunities(symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT"]) {
@@ -158,13 +205,13 @@ class ExchangeAdapterService {
       if (opp && opp.spread > 0.3) {
         opportunities.push(opp);
       }
-      // Delay para não sobrecarregar as APIs
+      // Pequeno delay para não sobrecarregar
       await this.sleep(500);
     }
     return opportunities.sort((a, b) => b.spread - a.spread);
   }
 
-  // ==================== MÉTODOS EXISTENTES ====================
+  // ==================== MÉTODOS EXISTENTES (com fallback) ====================
 
   getTicker(symbol) { 
     return this.prices[symbol] || null; 
@@ -174,13 +221,22 @@ class ExchangeAdapterService {
     return this.prices; 
   }
 
+  /**
+   * Obtém preço (prioriza real da Bybit, fallback para simulação)
+   */
   async getPrice(symbol) {
     try {
+      // Prioriza preço real da Bybit
+      const realPrice = await this.getBybitPrice(symbol);
+      if (realPrice) return realPrice;
+      
+      // Fallback para simulação
       const ticker = this.prices[symbol];
       if (ticker && ticker.price) {
         return ticker.price;
       }
-      logger.warn(`Símbolo ${symbol} não encontrado, usando fallback`, { service: "ExchangeAdapter" });
+      
+      logger.warn(`Símbolo ${symbol} não encontrado, usando fallback`);
       return symbol === "BTCUSDT" ? 65000 : symbol === "ETHUSDT" ? 3200 : 100;
     } catch (error) {
       logger.error(`Erro ao buscar preço de ${symbol}:`, error);
@@ -288,7 +344,7 @@ class ExchangeAdapterService {
     logger.info(`Mode changed to ${mode}`, { service: "ExchangeAdapter" });
   }
 
-  resetPaperBalance(initialBalance = { USDT: 10000, BTC: 0, ETH: 0, BNB: 0, SOL: 0, XRP: 0 }) {
+  resetPaperBalance(initialBalance = { USDT: 20000, BTC: 0, ETH: 0, BNB: 0, SOL: 0, XRP: 0 }) {
     this.paperBalance = { ...initialBalance };
     logger.info("Paper balance reset", { service: "ExchangeAdapter", balance: this.paperBalance });
   }
