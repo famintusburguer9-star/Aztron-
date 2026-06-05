@@ -1,21 +1,33 @@
+
 const logger = require("./LoggerService");
 const eventBus = require("./EventBus");
 const db = require("./DatabaseService");
 
-// 🔥 URL CORRETA DA BYBIT TESTNET
-const BYBIT_API_URL = "https://api-testnet.bybit.com";
+// Preços iniciais realistas
+const INITIAL_PRICES = {
+  BTCUSDT: 68000,
+  ETHUSDT: 3200,
+  BNBUSDT: 580,
+  SOLUSDT: 150,
+  XRPUSDT: 0.52,
+};
 
-// 🔥 SUAS CHAVES DA BYBIT TESTNET
-const BYBIT_API_KEY = "hBicpcF6fsEo7FS1xJ";
-const BYBIT_API_SECRET = "dmAOkQFYlhm3JngDlKgahjWxOif4Nv8HIKYy";
+// Volatilidade anual aproximada por par (%)
+const VOLATILITY = {
+  BTCUSDT: 0.45,   // 45% ao ano
+  ETHUSDT: 0.55,   // 55% ao ano
+  BNBUSDT: 0.50,
+  SOLUSDT: 0.70,
+  XRPUSDT: 0.60,
+};
 
-// Preços de fallback (caso API falhe)
-const MOCK_PRICES = {
-  BTCUSDT: { price: 69340.5, bid: 69335.0, ask: 69346.0, spread: 0.02, volume24h: 28450000000, high24h: 71200, low24h: 68100, change24h: 1.8 },
-  ETHUSDT: { price: 3284.2, bid: 3283.5, ask: 3284.9, spread: 0.04, volume24h: 14200000000, high24h: 3350, low24h: 3200, change24h: 1.2 },
-  BNBUSDT: { price: 312.8, bid: 312.6, ask: 313.0, spread: 0.06, volume24h: 1800000000, high24h: 320, low24h: 308, change24h: 0.5 },
-  SOLUSDT: { price: 168.5, bid: 168.2, ask: 168.8, spread: 0.05, volume24h: 3500000000, high24h: 175, low24h: 162, change24h: 2.1 },
-  XRPUSDT: { price: 0.52, bid: 0.519, ask: 0.521, spread: 0.03, volume24h: 980000000, high24h: 0.54, low24h: 0.51, change24h: -0.5 },
+// Correlação entre pares (BTC é referência)
+const CORRELATION = {
+  BTCUSDT: 1.0,
+  ETHUSDT: 0.85,
+  BNBUSDT: 0.70,
+  SOLUSDT: 0.65,
+  XRPUSDT: 0.50,
 };
 
 class ExchangeAdapterService {
@@ -23,180 +35,159 @@ class ExchangeAdapterService {
     this.exchange = db.getConfig().exchange || "BYBIT";
     this.mode = db.getConfig().mode || "PAPER";
     this.connected = true;
-    this.prices = { ...MOCK_PRICES };
+    this.prices = {};
     this.paperBalance = { USDT: 20000, BTC: 0, ETH: 0, BNB: 0, SOL: 0, XRP: 0 };
     this.tradeHistory = [];
     
-    // Cache para preços
-    this.cachedPrices = {
-      bybit: {}
-    };
+    // Inicializa preços
+    for (const [symbol, price] of Object.entries(INITIAL_PRICES)) {
+      this.prices[symbol] = {
+        price: price,
+        bid: price * 0.999,
+        ask: price * 1.001,
+        spread: 0.02,
+        volume24h: 0,
+        high24h: price,
+        low24h: price,
+        change24h: 0,
+        timestamp: Date.now()
+      };
+    }
     
-    this._simulatePrices();
+    // Inicia a simulação realista
+    this._startRealisticSimulation();
     
     logger.info("ExchangeAdapterService initialized", { 
       service: "ExchangeAdapter", 
       exchange: this.exchange, 
       mode: this.mode,
-      bybitUrl: BYBIT_API_URL,
-      status: "Usando BYBIT TESTNET com chave"
+      status: "SIMULAÇÃO REALISTA ATIVADA"
     });
   }
 
-  // Simulação de preços para fallback (quando API falha)
-  _simulatePrices() {
+  /**
+   * Gera movimento de preço realista usando distribuição log-normal
+   * com correlação entre pares e diferentes volatilidades por horário
+   */
+  _startRealisticSimulation() {
     setInterval(() => {
-      for (const sym of Object.keys(this.prices)) {
-        const t = this.prices[sym];
-        const volatility = 0.0006;
-        const trend = (Math.random() - 0.5) * 0.0002;
-        const delta = (Math.random() - 0.498) * t.price * volatility + (t.price * trend);
-        t.price = Math.max(t.price + delta, 0.01);
-        t.bid = t.price - (t.price * t.spread / 100 / 2);
-        t.ask = t.price + (t.price * t.spread / 100 / 2);
+      const now = new Date();
+      const hour = now.getUTCHours();
+      
+      // Fator de volatilidade por horário (mercados abertos = maior volatilidade)
+      let timeFactor = 0.5; // fora de horário comercial
+      
+      // NY Session (13h-22h UTC)
+      if (hour >= 13 && hour <= 22) timeFactor = 1.5;
+      // London Session (8h-17h UTC)
+      else if (hour >= 8 && hour <= 17) timeFactor = 1.2;
+      // Asia Session (0h-8h UTC)
+      else if (hour >= 0 && hour <= 8) timeFactor = 0.8;
+      
+      // Gera um movimento de mercado "master" (tendência geral)
+      const marketTrend = (Math.random() - 0.5) * 0.0003 * timeFactor;
+      
+      for (const [symbol, data] of Object.entries(this.prices)) {
+        const vol = VOLATILITY[symbol] || 0.5;
+        const correlation = CORRELATION[symbol] || 0.5;
         
-        if (Math.random() < 0.01) {
-          t.change24h = (Math.random() - 0.5) * 5;
+        // Movimento = tendência de mercado + ruído específico do par
+        const specificNoise = (Math.random() - 0.5) * 0.0004 * timeFactor * (1 - correlation);
+        const deltaPercent = (marketTrend * correlation) + specificNoise;
+        
+        // Aplica volatilidade anual
+        const dailyVol = vol / Math.sqrt(365); // volatilidade diária
+        const finalDelta = deltaPercent * dailyVol * timeFactor;
+        
+        let newPrice = data.price * (1 + finalDelta);
+        
+        // Garante preço mínimo e máximo realista
+        if (symbol === 'BTCUSDT') newPrice = Math.max(30000, Math.min(150000, newPrice));
+        if (symbol === 'ETHUSDT') newPrice = Math.max(1500, Math.min(8000, newPrice));
+        if (symbol === 'BNBUSDT') newPrice = Math.max(200, Math.min(1200, newPrice));
+        if (symbol === 'SOLUSDT') newPrice = Math.max(20, Math.min(500, newPrice));
+        if (symbol === 'XRPUSDT') newPrice = Math.max(0.3, Math.min(3, newPrice));
+        
+        // Atualiza preço
+        data.price = newPrice;
+        data.bid = newPrice * 0.999;
+        data.ask = newPrice * 1.001;
+        
+        // Atualiza high/low
+        if (newPrice > data.high24h) data.high24h = newPrice;
+        if (newPrice < data.low24h) data.low24h = newPrice;
+        
+        // Calcula change24h
+        const price24hAgo = data.price24hAgo || newPrice;
+        data.change24h = ((newPrice - price24hAgo) / price24hAgo) * 100;
+        
+        // Atualiza volume simulado (mais volume em horários ativos)
+        data.volume24h = Math.floor(Math.random() * 50000000 * timeFactor) + 10000000;
+        
+        // Salva preço de 24h atrás (a cada 24 horas)
+        if (!data.lastReset || Date.now() - data.lastReset > 86400000) {
+          data.price24hAgo = newPrice;
+          data.lastReset = Date.now();
         }
       }
+      
       eventBus.emit("tick", this.prices);
-    }, 2000);
+      
+    }, 2000); // atualiza a cada 2 segundos
   }
 
-  // ==================== 🔥 BYBIT TESTNET COM CHAVE ====================
+  // ==================== MÉTODOS PRINCIPAIS ====================
 
-  /**
-   * Gera a assinatura para a requisição da Bybit
-   */
-  _generateSignature(params, secret) {
-    const crypto = require('crypto');
-    const queryString = Object.keys(params)
-      .sort()
-      .map(key => `${key}=${params[key]}`)
-      .join('&');
-    return crypto.createHmac('sha256', secret).update(queryString).digest('hex');
-  }
-
-  /**
-   * Busca preço REAL da Bybit TESTNET (com chave)
-   * @param {string} symbol - Ex: "BTCUSDT"
-   * @returns {Promise<number>}
-   */
-  async getBybitPrice(symbol) {
-    try {
-      // Verifica cache (5 segundos)
-      const cached = this.cachedPrices.bybit[symbol];
-      if (cached && (Date.now() - cached.timestamp) < 5000) {
-        return cached.price;
-      }
-      
-      // 🔥 URL da TESTNET
-      const url = `${BYBIT_API_URL}/v5/market/tickers?category=spot&symbol=${symbol}`;
-      
-      const timestamp = Date.now().toString();
-      const params = {
-        api_key: BYBIT_API_KEY,
-        timestamp: timestamp,
-        recv_window: 5000
-      };
-      
-      const signature = this._generateSignature(params, BYBIT_API_SECRET);
-      
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
-      
-      const response = await fetch(url, { 
-        signal: controller.signal,
-        headers: {
-          'X-BAPI-API-KEY': BYBIT_API_KEY,
-          'X-BAPI-TIMESTAMP': timestamp,
-          'X-BAPI-SIGN': signature,
-          'X-BAPI-RECV-WINDOW': '5000'
-        }
-      });
-      clearTimeout(timeout);
-      
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-      
-      const data = await response.json();
-      
-      if (data && data.result && data.result.list && data.result.list[0]) {
-        const price = parseFloat(data.result.list[0].lastPrice);
-        
-        // Atualiza cache
-        this.cachedPrices.bybit[symbol] = { price, timestamp: Date.now() };
-        
-        logger.info(`✅ Bybit TESTNET: ${symbol} = $${price}`);
-        return price;
-      }
-      
-      throw new Error(`Preço não encontrado para ${symbol}`);
-    } catch (error) {
-      logger.error(`Erro ao buscar preço na Bybit TESTNET: ${error.message}`);
-      return null;
+  async getPrice(symbol) {
+    const ticker = this.prices[symbol];
+    if (ticker && ticker.price) {
+      return ticker.price;
     }
+    logger.warn(`Símbolo ${symbol} não encontrado, usando fallback`);
+    return INITIAL_PRICES[symbol] || 100;
+  }
+
+  getTicker(symbol) { 
+    return this.prices[symbol] || null; 
+  }
+  
+  getAllTickers() { 
+    return this.prices; 
+  }
+
+  getSpread(symbol) {
+    const ticker = this.prices[symbol];
+    if (!ticker) return null;
+    return {
+      bid: ticker.bid,
+      ask: ticker.ask,
+      spread: ticker.ask - ticker.bid,
+      spreadPercent: ((ticker.ask - ticker.bid) / ticker.price) * 100
+    };
   }
 
   /**
-   * Busca volatilidade REAL da Bybit TESTNET
-   * @param {string} symbol 
-   * @returns {Promise<number>}
-   */
-  async getBybitVolatility(symbol) {
-    try {
-      const url = `${BYBIT_API_URL}/v5/market/tickers?category=spot&symbol=${symbol}`;
-      const timestamp = Date.now().toString();
-      const params = {
-        api_key: BYBIT_API_KEY,
-        timestamp: timestamp,
-        recv_window: 5000
-      };
-      const signature = this._generateSignature(params, BYBIT_API_SECRET);
-      
-      const response = await fetch(url, {
-        headers: {
-          'X-BAPI-API-KEY': BYBIT_API_KEY,
-          'X-BAPI-TIMESTAMP': timestamp,
-          'X-BAPI-SIGN': signature,
-          'X-BAPI-RECV-WINDOW': '5000'
-        }
-      });
-      const data = await response.json();
-      
-      if (data && data.result && data.result.list && data.result.list[0]) {
-        const change24h = parseFloat(data.result.list[0].change24h) || 0;
-        return Math.abs(change24h);
-      }
-      return 1.0;
-    } catch (error) {
-      logger.error(`Erro ao buscar volatilidade: ${error.message}`);
-      return 1.0;
-    }
-  }
-
-  /**
-   * 🔥 GERA OPORTUNIDADE SIMULADA PARA TESTE
-   * (baseada na volatilidade real da Bybit)
+   * 🔥 GERA OPORTUNIDADE DE ARBITRAGEM SIMULADA REALISTA
+   * Baseada na volatilidade atual do mercado
    */
   async getArbitrageOpportunity(symbol = "BTCUSDT") {
     try {
-      const realPrice = await this.getBybitPrice(symbol);
+      const realPrice = await this.getPrice(symbol);
       
-      if (!realPrice) {
-        return null;
-      }
+      if (!realPrice) return null;
       
-      // Pega volatilidade real para simular spread
-      const volatility = await this.getBybitVolatility(symbol);
+      // Pega volatilidade atual (baseada no movimento recente)
+      const ticker = this.prices[symbol];
+      const volatility = Math.abs(ticker.change24h) / 100;
       
-      // Gera spread simulado baseado na volatilidade real (0.1% a 2%)
-      const simulatedSpread = Math.min(2.0, Math.max(0.1, volatility * 0.3 + Math.random() * 0.5));
+      // Spread máximo possível (maior em momentos voláteis)
+      const maxSpread = Math.min(2.0, volatility * 0.5 + 0.3);
       
-      // Determina direção aleatória (mas realista)
+      // Gera spread baseado na volatilidade real
+      const simulatedSpread = Math.random() * maxSpread;
+      
+      // Simula preço da segunda exchange
       const isBinanceHigher = Math.random() > 0.5;
-      
       let binancePrice = realPrice;
       let bybitPrice = realPrice;
       
@@ -219,12 +210,13 @@ class ExchangeAdapterService {
         isRealData: false,
         isSimulated: true,
         baseRealPrice: realPrice,
-        volatility: volatility,
+        volatility: parseFloat(volatility.toFixed(4)),
+        marketCondition: ticker.change24h > 0 ? "BULLISH" : ticker.change24h < 0 ? "BEARISH" : "NEUTRAL",
         timestamp: Date.now()
       };
 
       if (simulatedSpread > 0.5) {
-        logger.info(`🎯 SIMULAÇÃO ARBITRAGEM: ${symbol} | Spread: ${simulatedSpread}% | Comprar em ${buyExchange} | Vender em ${sellExchange} | Base real: $${realPrice}`);
+        logger.info(`🎯 [SIMULAÇÃO REALISTA] ${symbol} | Spread: ${simulatedSpread}% | Comprar em ${buyExchange} | Vender em ${sellExchange} | Vol: ${volatility}%`);
       }
 
       return result;
@@ -232,36 +224,6 @@ class ExchangeAdapterService {
       logger.error(`Erro na análise de arbitragem: ${error.message}`);
       return null;
     }
-  }
-
-  // ==================== MÉTODOS PRINCIPAIS ====================
-
-  async getPrice(symbol) {
-    try {
-      // Prioriza preço real da Bybit TESTNET
-      const realPrice = await this.getBybitPrice(symbol);
-      if (realPrice) return realPrice;
-      
-      // Fallback para simulação
-      const ticker = this.prices[symbol];
-      if (ticker && ticker.price) {
-        return ticker.price;
-      }
-      
-      logger.warn(`Símbolo ${symbol} não encontrado, usando fallback`);
-      return symbol === "BTCUSDT" ? 65000 : 3200;
-    } catch (error) {
-      logger.error(`Erro ao buscar preço de ${symbol}:`, error);
-      return 0;
-    }
-  }
-
-  getTicker(symbol) { 
-    return this.prices[symbol] || null; 
-  }
-  
-  getAllTickers() { 
-    return this.prices; 
   }
 
   async placeOrder(symbol, side, qty, price = null) {
@@ -313,6 +275,27 @@ class ExchangeAdapterService {
 
   getBalance() { 
     return { ...this.paperBalance }; 
+  }
+
+  async getTotalBalance() {
+    let total = this.paperBalance.USDT || 0;
+    for (const [asset, amount] of Object.entries(this.paperBalance)) {
+      if (asset !== "USDT" && amount > 0) {
+        const price = await this.getPrice(`${asset}USDT`);
+        total += amount * price;
+      }
+    }
+    return total;
+  }
+
+  isConnected() { 
+    return this.connected; 
+  }
+
+  setExchange(exchange) { 
+    this.exchange = exchange; 
+    db.updateConfig({ exchange });
+    logger.info(`Exchange changed to ${exchange}`);
   }
 
   setMode(mode) { 
