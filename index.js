@@ -40,6 +40,11 @@ const hft = require("./HFTService");
 const capitalRouter = require("./CapitalRouterService");
 const weeklySettlement = require("./WeeklySettlementService");
 
+// ==================== 🆕🆕🆕 NOVOS SERVICOS (3) ====================
+const arbitrageService = require("./ArbitrageService");
+const consciousnessBridge = require("./ConsciousnessBridgeService");
+const capitalOrchestrator = require("./CapitalOrchestratorService");
+
 const PORT = process.env.PORT || 3001;
 const app = express();
 const server = http.createServer(app);
@@ -573,6 +578,48 @@ app.post("/api/hft/reset", (req, res) => {
   }
 });
 
+// ==================== 🆕🆕🆕 NOVAS ROTAS DOS NOVOS SERVICOS ====================
+
+// Arbitrage Service Routes
+app.get("/api/arbitrage/status", (_req, res) => {
+  res.json({ running: arbitrageService.isRunning });
+});
+
+app.get("/api/arbitrage/opportunities", (_req, res) => {
+  res.json(arbitrageService.opportunities || []);
+});
+
+// Consciousness Bridge Routes
+app.get("/api/consciousness-bridge/status", (_req, res) => {
+  res.json({ 
+    running: true, 
+    patternsFound: consciousnessBridge.patterns?.length || 0,
+    learningsCount: consciousnessBridge.learnings?.length || 0
+  });
+});
+
+app.get("/api/consciousness-bridge/patterns", (_req, res) => {
+  res.json(consciousnessBridge.patterns || []);
+});
+
+app.get("/api/consciousness-bridge/learnings", (_req, res) => {
+  res.json(consciousnessBridge.learnings || []);
+});
+
+// Capital Orchestrator Routes
+app.get("/api/capital-orchestrator/status", (_req, res) => {
+  res.json({
+    totalCapital: capitalOrchestrator.totalCapital,
+    reservedCapital: capitalOrchestrator.reservedCapital,
+    limits: capitalOrchestrator.limits,
+    performance: capitalOrchestrator.servicePerformance
+  });
+});
+
+app.get("/api/capital-orchestrator/allocation-history", (_req, res) => {
+  res.json(capitalOrchestrator.allocationHistory || []);
+});
+
 // ==================== FIM HFT ROUTES ====================
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────
@@ -596,6 +643,11 @@ io.on("connection", (socket) => {
   // 🆕 HFT WebSocket events
   const hftTradeHandler = (trade) => socket.emit("hft:trade", trade);
   const hftStatusHandler = (status) => socket.emit("hft:status", status);
+  
+  // 🆕🆕🆕 NOVOS WebSocket events
+  const arbitrageHandler = (opp) => socket.emit("arbitrage:opportunity", opp);
+  const insightHandler = (insight) => socket.emit("consciousness:insight", insight);
+  const capitalAllocationHandler = (allocation) => socket.emit("capital:allocated", allocation);
 
   eventBus.on("tick", tickHandler);
   eventBus.on("signal", signalHandler);
@@ -609,6 +661,9 @@ io.on("connection", (socket) => {
   eventBus.on("savings:update", savingsUpdateHandler);
   eventBus.on("hft:trade", hftTradeHandler);
   eventBus.on("hft:status", hftStatusHandler);
+  eventBus.on("arbitrage:opportunity", arbitrageHandler);
+  eventBus.on("consciousness:insight", insightHandler);
+  eventBus.on("capital:allocated", capitalAllocationHandler);
 
   socket.on("disconnect", () => {
     eventBus.off("tick", tickHandler);
@@ -623,6 +678,9 @@ io.on("connection", (socket) => {
     eventBus.off("savings:update", savingsUpdateHandler);
     eventBus.off("hft:trade", hftTradeHandler);
     eventBus.off("hft:status", hftStatusHandler);
+    eventBus.off("arbitrage:opportunity", arbitrageHandler);
+    eventBus.off("consciousness:insight", insightHandler);
+    eventBus.off("capital:allocated", capitalAllocationHandler);
     logger.info(`WebSocket disconnected: ${socket.id}`, { service: "WebSocket" });
   });
 });
@@ -638,6 +696,17 @@ async function main() {
   // 🆕 Inicializar serviços HFT
   await capitalRouter.initialize();
   await hft.initialize();
+  
+  // ==================== 🆕🆕🆕 INICIALIZAR NOVOS SERVICOS ====================
+  // ORDEM IMPORTANTE!
+  logger.info("🧠 Inicializando ConsciousnessBridgeService...", { service: "Startup" });
+  await consciousnessBridge.start?.();
+  
+  logger.info("💰 Inicializando CapitalOrchestratorService...", { service: "Startup" });
+  await capitalOrchestrator.start?.();
+  
+  logger.info("🚀 Inicializando ArbitrageService...", { service: "Startup" });
+  await arbitrageService.start?.();
   
   await orchestrator.init();
   await orchestrator.start();
@@ -656,6 +725,10 @@ async function main() {
     logger.info(`🤖 HFT Trading Engine ready`, { service: "HFT" });
     logger.info(`💰 Capital Router ready`, { service: "CapitalRouter" });
     logger.info(`📊 Weekly Settlement ready`, { service: "WeeklySettlement" });
+    logger.info(`🧠 Consciousness Bridge ready`, { service: "ConsciousnessBridge" });
+    logger.info(`💰 Capital Orchestrator ready`, { service: "CapitalOrchestrator" });
+    logger.info(`🚀 Arbitrage Service ready`, { service: "ArbitrageService" });
+    logger.info(`✅ TOTAL DE SERVIÇOS: 41 (38 antigos + 3 novos)`, { service: "Orchestrator" });
   });
 }
 
