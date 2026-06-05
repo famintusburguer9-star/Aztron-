@@ -1,5 +1,9 @@
 const marketCondition = require("./MarketConditionService");
 const logger = require("./LoggerService");
+const EventBus = require("./EventBus");
+
+// 🆕 IMPORT PARA INTEGRAÇÃO COM LEARNING BRAIN
+const learningBrain = require("./LearningBrainService");
 
 class SentimentService {
   constructor() {
@@ -7,27 +11,189 @@ class SentimentService {
     this.sentiment = "NEUTRAL";
     this._updateInterval = null;
     
+    // 🆕 IDENTIFICAÇÃO PARA O LEARNING BRAIN
+    this.agentId = "sentiment";
+    this.lastInsightSent = null;
+    this.insightHistory = [];
+    
     // Detecta se tem chaves configuradas
     this.hasTwitterKeys = !!(process.env.TWITTER_API_KEY && process.env.TWITTER_API_SECRET);
     this.hasRedditKeys = !!(process.env.REDDIT_CLIENT_ID && process.env.REDDIT_CLIENT_SECRET);
     this.useRealData = this.hasTwitterKeys || this.hasRedditKeys;
     
+    // 🆕 ESCUTA MELHORIAS DO LEARNING BRAIN (sentimento pode ser refinado)
+    EventBus.on(`improvement:${this.agentId}`, (improvement) => {
+      this.applyImprovement(improvement);
+    });
+    
+    EventBus.on("improvement:broadcast", (improvement) => {
+      if (improvement.affectedAgents?.includes(this.agentId)) {
+        this.applyImprovement(improvement);
+      }
+    });
+    
     logger.info("SentimentService initialized", { 
       service: "Sentiment",
       twitterConfigured: this.hasTwitterKeys,
       redditConfigured: this.hasRedditKeys,
-      mode: this.useRealData ? "REAL_API" : "SIMULATED"
+      mode: this.useRealData ? "REAL_API" : "SIMULATED",
+      agentId: this.agentId
     });
+  }
+
+  // 🆕 APLICA MELHORIAS RECEBIDAS DO LEARNING BRAIN
+  applyImprovement(improvement) {
+    logger.info(`🧠 Sentiment recebeu melhoria: ${improvement.recommendation}`, { service: "Sentiment" });
+    
+    switch(improvement.recommendation) {
+      case "REVISAR_TODAS_POSICOES_E_CONSIDERAR_CONTRA_TREND":
+        // Ajusta o multiplicador de posição baseado no insight
+        const multiplier = this.getSentiment().positionSizingMultiplier;
+        logger.info(`📊 Sentimento extremo detectado - ajustando recomendação para ${this.sentiment}`, { service: "Sentiment" });
+        break;
+        
+      default:
+        logger.debug(`Melhoria recebida: ${improvement.recommendation}`, { service: "Sentiment" });
+    }
+  }
+
+  // 🆕 COMPARTILHA INSIGHT COM O LEARNING BRAIN
+  shareInsight(insightType, content, confidence, priority = "normal") {
+    const insight = {
+      type: insightType,
+      content: content,
+      confidence: confidence,
+      priority: priority,
+      data: {
+        fearGreedIndex: this.fearGreedIndex,
+        sentiment: this.sentiment,
+        timestamp: Date.now()
+      }
+    };
+    
+    this.lastInsightSent = insight;
+    this.insightHistory.unshift(insight);
+    if (this.insightHistory.length > 100) this.insightHistory.pop();
+    
+    // Envia para o LearningBrain
+    EventBus.emit(`learning:${this.agentId}`, insight);
+    
+    logger.info(`📤 Sentiment compartilhou insight: ${content.substring(0, 80)} (confiança: ${(confidence*100).toFixed(0)}%)`, { service: "Sentiment" });
+  }
+
+  // 🆕 EMITE EVENTO DE SENTIMENTO EXTREMO QUANDO DETECTADO
+  emitExtremeSentiment() {
+    let type = null;
+    
+    if (this.fearGreedIndex >= 75) {
+      type = "EXTREME_GREED";
+    } else if (this.fearGreedIndex <= 25) {
+      type = "EXTREME_FEAR";
+    }
+    
+    if (type) {
+      const eventData = {
+        type: type,
+        index: this.fearGreedIndex,
+        label: this.sentiment,
+        timestamp: Date.now()
+      };
+      
+      EventBus.emit("sentiment:extreme", eventData);
+      logger.info(`🚨 Sentimento extremo detectado: ${type} (${this.fearGreedIndex})`, { service: "Sentiment" });
+      
+      // Compartilha insight de alto impacto
+      this.shareInsight(
+        "extreme_sentiment",
+        `${type} detectado com índice ${this.fearGreedIndex} - possível ponto de virada de mercado`,
+        type === "EXTREME_FEAR" ? 0.85 : 0.8,
+        "high"
+      );
+    }
   }
 
   async start() {
     // Busca Fear & Greed real (sempre tenta, é grátis)
     await this._fetchRealFearGreed();
     
+    // 🆕 EMITE EVENTO DE SENTIMENTO INICIAL
+    this.emitSentimentUpdate();
+    
     // Atualiza a cada 5 minutos
     this._updateInterval = setInterval(async () => {
       await this._fetchRealFearGreed();
+      this.emitSentimentUpdate();
+      this.checkAndShareInsights();
     }, 5 * 60 * 1000);
+    
+    logger.info("SentimentService started - monitorando mercado em tempo real", { service: "Sentiment" });
+  }
+
+  // 🆕 EMITE ATUALIZAÇÃO DE SENTIMENTO PARA OUTROS SERVIÇOS
+  emitSentimentUpdate() {
+    const sentimentData = this.getSentiment();
+    
+    EventBus.emit("sentiment:update", {
+      fearGreedIndex: this.fearGreedIndex,
+      fearGreedLabel: this.sentiment,
+      marketSentiment: sentimentData.marketSentiment,
+      positionSizingMultiplier: sentimentData.positionSizingMultiplier,
+      timestamp: Date.now()
+    });
+    
+    // Verifica se é extremo
+    this.emitExtremeSentiment();
+  }
+
+  // 🆕 VERIFICA E COMPARTILHA INSIGHTS BASEADOS EM MUDANÇAS
+  checkAndShareInsights() {
+    // Mudança significativa no Fear & Greed
+    const lastInsight = this.insightHistory[0];
+    if (lastInsight && lastInsight.data) {
+      const lastIndex = lastInsight.data.fearGreedIndex;
+      const indexChange = Math.abs(this.fearGreedIndex - lastIndex);
+      
+      if (indexChange >= 15) {
+        const direction = this.fearGreedIndex > lastIndex ? "aumentou" : "diminuiu";
+        this.shareInsight(
+          "sentiment_shift",
+          `Fear & Greed ${direction} ${indexChange} pontos em 5 minutos (${lastIndex} → ${this.fearGreedIndex})`,
+          0.7,
+          "high"
+        );
+      }
+    }
+    
+    // Compartilha insights baseados no nível atual
+    if (this.fearGreedIndex >= 75) {
+      this.shareInsight(
+        "market_condition",
+        `Mercado em Ganância Extrema (${this.fearGreedIndex}) - risco de correção aumentado`,
+        0.8,
+        "high"
+      );
+    } else if (this.fearGreedIndex <= 25) {
+      this.shareInsight(
+        "market_condition",
+        `Mercado em Medo Extremo (${this.fearGreedIndex}) - possível oportunidade de compra`,
+        0.85,
+        "high"
+      );
+    } else if (this.fearGreedIndex >= 55) {
+      this.shareInsight(
+        "market_condition",
+        `Mercado em Ganância (${this.fearGreedIndex}) - cautela recomendada`,
+        0.6,
+        "normal"
+      );
+    } else if (this.fearGreedIndex <= 40) {
+      this.shareInsight(
+        "market_condition",
+        `Mercado em Medo (${this.fearGreedIndex}) - zona de acumulação`,
+        0.65,
+        "normal"
+      );
+    }
   }
 
   // Função para converter classificação em português para inglês
@@ -66,9 +232,16 @@ class SentimentService {
       }
       
       if (value && !isNaN(value) && classification) {
+        const oldIndex = this.fearGreedIndex;
         this.fearGreedIndex = value;
         this.sentiment = classification;
         logger.info(`Fear & Greed REAL: ${this.fearGreedIndex} (${this.sentiment})`, { service: "Sentiment" });
+        
+        // Se mudou drasticamente, compartilha insight
+        if (Math.abs(this.fearGreedIndex - oldIndex) >= 10) {
+          this.checkAndShareInsights();
+        }
+        
         return;
       }
       
@@ -78,6 +251,7 @@ class SentimentService {
       logger.warn(`Fear & Greed API failed (${error.message}), using simulated`, { service: "Sentiment" });
       
       // Fallback simulado
+      const oldIndex = this.fearGreedIndex;
       const change = (Math.random() - 0.5) * 6;
       let newValue = this.fearGreedIndex + change;
       newValue = Math.min(95, Math.max(5, newValue));
@@ -87,6 +261,11 @@ class SentimentService {
         : this.fearGreedIndex >= 45 ? "NEUTRAL" 
         : this.fearGreedIndex >= 25 ? "FEAR" 
         : "EXTREME_FEAR";
+      
+      // Se mudou drasticamente, compartilha insight (mesmo simulado)
+      if (Math.abs(this.fearGreedIndex - oldIndex) >= 10) {
+        this.checkAndShareInsights();
+      }
     }
   }
 
@@ -225,7 +404,9 @@ class SentimentService {
         recommendation_reason: recommendationReason,
         last_updated: new Date().toISOString(),
         recent_posts: posts,
-        data_source: hasRealSocialData ? "REAL_SOCIAL + FEAR_GREED" : "FEAR_GREED_ONLY"
+        data_source: hasRealSocialData ? "REAL_SOCIAL + FEAR_GREED" : "FEAR_GREED_ONLY",
+        // 🆕 ADICIONA INSIGHT DO LEARNING BRAIN (se disponível)
+        learning_insight: this.lastInsightSent?.content || null
       };
       
     } catch (error) {
@@ -264,6 +445,7 @@ class SentimentService {
 
   stop() { 
     if (this._updateInterval) clearInterval(this._updateInterval); 
+    logger.info("SentimentService stopped", { service: "Sentiment" });
   }
 
   getSentiment() {
@@ -276,6 +458,25 @@ class SentimentService {
       positionSizingMultiplier: this.fearGreedIndex > 75 ? 0.8 : this.fearGreedIndex < 25 ? 1.2 : 1.0,
       dataMode: this.useRealData ? "REAL" : "SIMULATED"
     };
+  }
+
+  // 🆕 MÉTODO PARA OBTER STATUS COMPLETO
+  getStatus() {
+    return {
+      running: this._updateInterval !== null,
+      fearGreedIndex: this.fearGreedIndex,
+      sentiment: this.sentiment,
+      dataMode: this.useRealData ? "REAL_API" : "SIMULATED",
+      lastInsight: this.lastInsightSent,
+      insightsCount: this.insightHistory.length,
+      twitterConfigured: this.hasTwitterKeys,
+      redditConfigured: this.hasRedditKeys
+    };
+  }
+
+  // 🆕 MÉTODO PARA OBTER HISTÓRICO DE INSIGHTS
+  getInsightHistory(limit = 20) {
+    return this.insightHistory.slice(0, limit);
   }
 }
 
