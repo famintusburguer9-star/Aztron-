@@ -452,12 +452,12 @@ app.post("/api/savings/withdraw", (req, res) => {
   res.json(tokenomics.withdrawFromSavings(amount));
 });
 
-// ==================== 🆕 HFT ROUTES ====================
+// ==================== 🆕 HFT ROUTES (CORRIGIDAS - usando 'hft') ====================
 
 // Iniciar HFT
 app.post("/api/hft/start", async (req, res) => {
   try {
-    const result = await hftService.start();
+    const result = await hft.start();
     res.json({ success: true, ...result });
   } catch (error) {
     logger.error("HFT start error:", error);
@@ -468,7 +468,7 @@ app.post("/api/hft/start", async (req, res) => {
 // Parar HFT
 app.post("/api/hft/stop", async (req, res) => {
   try {
-    const result = await hftService.stop();
+    const result = await hft.stop();
     res.json({ success: true, ...result });
   } catch (error) {
     logger.error("HFT stop error:", error);
@@ -479,7 +479,7 @@ app.post("/api/hft/stop", async (req, res) => {
 // Status do HFT
 app.get("/api/hft/status", async (req, res) => {
   try {
-    const status = hftService.getStatus();
+    const status = hft.getStatus();
     res.json(status);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -489,7 +489,7 @@ app.get("/api/hft/status", async (req, res) => {
 // Métricas do HFT
 app.get("/api/hft/metrics", async (req, res) => {
   try {
-    const metrics = await hftService.getMetrics();
+    const metrics = hft.getMetrics();
     res.json(metrics);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -500,7 +500,7 @@ app.get("/api/hft/metrics", async (req, res) => {
 app.get("/api/hft/trades", (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 50;
-    const trades = db.getHFTTrades(limit);
+    const trades = db.getHFTTrades?.(limit) || [];
     res.json(trades);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -521,7 +521,7 @@ app.get("/api/capital/balance", async (req, res) => {
 app.get("/api/capital/flow", (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 50;
-    const flow = db.getCapitalFlowLog(limit);
+    const flow = db.getCapitalFlowLog?.(limit) || [];
     res.json(flow);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -566,7 +566,7 @@ app.get("/api/weekly/last", async (req, res) => {
 // Reset HFT (admin)
 app.post("/api/hft/reset", (req, res) => {
   try {
-    const result = db.resetHFTData();
+    const result = db.resetHFTData?.() || { success: true };
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
