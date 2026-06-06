@@ -39,6 +39,7 @@ class TradeExecutorService {
     
     // 🆕 ESCUTA SINAIS DE TODOS OS ROBÔS
     eventBus.on("signal", async (signal) => {
+      logger.info(`🔍 DEBUG: TradeExecutor recebeu evento "signal"`, { service: "TradeExecutor" });
       await this.handleSignal(signal);
     });
     
@@ -56,12 +57,23 @@ class TradeExecutorService {
     });
     
     // 🔥🔥🔥 FORÇA O START DO TRADE EXECUTOR 🔥🔥🔥
+    logger.info("🔍 DEBUG: Chamando this.start() no construtor", { service: "TradeExecutor" });
     this.start();
   }
 
   async handleSignal(signal) {
-    if (!this.running || this.paused) return;
-    if (signal.status !== "ACTIVE") return;
+    // 🔥 LOG DE DEBUG
+    logger.info(`🔍 DEBUG: handleSignal chamado! running=${this.running}, paused=${this.paused}`, { service: "TradeExecutor" });
+    
+    if (!this.running || this.paused) {
+      logger.warn(`❌ TradeExecutor NÃO ESTÁ RODANDO! running=${this.running}, paused=${this.paused}`, { service: "TradeExecutor" });
+      return;
+    }
+    
+    if (signal.status !== "ACTIVE") {
+      logger.debug(`⚠️ Signal status não é ACTIVE: ${signal.status}`, { service: "TradeExecutor" });
+      return;
+    }
     
     if (this._isWeekend() && signal.agent !== "hft") {
       logger.debug(`Ignorando sinal de ${signal.agent} no fim de semana`, { service: "TradeExecutor" });
@@ -127,9 +139,12 @@ class TradeExecutorService {
   }
 
   start() { 
+    logger.info("🔍 DEBUG: start() chamado!", { service: "TradeExecutor" });
     this.running = true; 
+    this.paused = false;
     this._monitorOpenTrades();
     logger.info("🚀 TradeExecutorService started - AGORA VAI EXECUTAR TRADES!", { service: "TradeExecutor" });
+    logger.info(`🔍 DEBUG: running agora é ${this.running}`, { service: "TradeExecutor" });
     return { success: true };
   }
   
@@ -154,11 +169,22 @@ class TradeExecutorService {
   isPaused() { return this.paused; }
 
   async executeTrade({ symbol, side, strategy, confidence, agent, prediction }) {
-    if (!this.running) return { success: false, reason: "Engine stopped" };
-    if (this.paused) return { success: false, reason: "Trading paused" };
+    logger.info(`🔍 DEBUG: executeTrade chamado para ${side} ${symbol}`, { service: "TradeExecutor" });
+    
+    if (!this.running) {
+      logger.error(`❌ executeTrade: Engine stopped! running=${this.running}`, { service: "TradeExecutor" });
+      return { success: false, reason: "Engine stopped" };
+    }
+    if (this.paused) {
+      logger.error(`❌ executeTrade: Trading paused!`, { service: "TradeExecutor" });
+      return { success: false, reason: "Trading paused" };
+    }
     
     const ticker = exchange.getTicker(symbol);
-    if (!ticker) return { success: false, reason: "No ticker data" };
+    if (!ticker) {
+      logger.error(`❌ No ticker data for ${symbol}`, { service: "TradeExecutor" });
+      return { success: false, reason: "No ticker data" };
+    }
 
     const cfg = db.getConfig();
     const positionInfo = risk.calculatePositionSize(symbol, ticker.price, cfg.stopLoss, agent, confidence);
@@ -169,6 +195,7 @@ class TradeExecutorService {
     }
     
     const estimatedCost = positionInfo.qty * ticker.price;
+    logger.info(`🔍 DEBUG: estimatedCost = ${estimatedCost}`, { service: "TradeExecutor" });
     
     const capitalRequest = await this._requestCapital(agent, estimatedCost, `Trade: ${side} ${symbol}`);
     
@@ -204,6 +231,7 @@ class TradeExecutorService {
         ? ticker.price * (1 + cfg.takeProfit / 100)
         : ticker.price * (1 - cfg.takeProfit / 100);
       
+      logger.info(`🔍 DEBUG: Chamando exchange.placeOrder para ${symbol}`, { service: "TradeExecutor" });
       const order = await exchange.placeOrder(symbol, side, positionInfo.qty, ticker.price, agent);
       
       const trade = {
@@ -254,6 +282,7 @@ class TradeExecutorService {
   }
 
   async _requestCapital(agent, amount, reason) {
+    logger.info(`🔍 DEBUG: _requestCapital chamado para ${agent} - amount: ${amount}`, { service: "TradeExecutor" });
     return new Promise((resolve) => {
       capitalDistributor.handleRequest({
         agentId: agent,
@@ -265,6 +294,7 @@ class TradeExecutorService {
   }
 
   _returnCapital(agent, amount, reason) {
+    logger.info(`🔍 DEBUG: _returnCapital chamado para ${agent} - amount: ${amount}`, { service: "TradeExecutor" });
     eventBus.emit("capital:return", {
       agentId: agent,
       amount: amount,
@@ -273,6 +303,7 @@ class TradeExecutorService {
   }
 
   _monitorOpenTrades() {
+    logger.info("🔍 DEBUG: _monitorOpenTrades iniciado", { service: "TradeExecutor" });
     setInterval(() => {
       if (!this.running) return;
       
