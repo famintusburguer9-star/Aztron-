@@ -8,7 +8,7 @@ const tokenomics = require("./TokenomicsService");
 
 // 🆕 INTEGRAÇÃO COM NOVOS SERVIÇOS
 const capitalDistributor = require("./CapitalDistributorService");
-// const learningBrain = require("./LearningBrainService"); // 🔥 COMENTADO
+const learningBrain = require("./LearningBrainService"); // 🔥 ATIVADO!
 
 class TradeExecutorService {
   constructor() {
@@ -62,20 +62,22 @@ class TradeExecutorService {
       this._processPendingSignals(capitalReturn.agentId);
     });
     
-    // 🔥 NOVO: ESCUTA APRENDIZADO COMPARTILHADO DE OUTROS AGENTES (HFT, ARBITRAGE)
-    eventBus.on("learning:share", (learning) => {
-      this._applySharedLearning(learning);
+    // 🔥 ESCUTA APRENDIZADO COMPARTILHADO DO LEARNING BRAIN
+    eventBus.on("improvement:broadcast", (improvement) => {
+      if (improvement.affectedAgents?.includes("trend") || !improvement.to) {
+        this._applyImprovement(improvement);
+      }
     });
     
-    // 🔥 NOVO: ESCUTA DICAS DO CONSELHO
+    // 🔥 ESCUTA MELHORIAS DIRETAS PARA O TREND
+    eventBus.on("improvement:trend", (improvement) => {
+      this._applyImprovement(improvement);
+    });
+    
+    // 🆕 ESCUTA DECISÕES DO CONSELHO
     eventBus.on("council:decision", async (decision) => {
       if (decision && decision.action !== "HOLD") {
         logger.info(`🏛️ Conselho decidiu: ${decision.action} (força: ${(decision.strength*100).toFixed(0)}%)`, { service: "TradeExecutor" });
-        
-        // Se o conselho recomenda algo com alta força, o Trend considera
-        if (decision.strength > 0.7 && decision.action === "BUY") {
-          logger.info(`📈 Trend seguindo recomendação do conselho para ${decision.symbol || "mercado"}`, { service: "TradeExecutor" });
-        }
       }
     });
     
@@ -90,44 +92,45 @@ class TradeExecutorService {
     this.start();
   }
 
-  // 🔥 NOVO: APLICA APRENDIZADO COMPARTILHADO DE OUTROS AGENTES
-  _applySharedLearning(learning) {
-    if (!learning || learning.agentId === "trend") return;
+  // 🔥 APLICA MELHORIAS DO LEARNING BRAIN
+  _applyImprovement(improvement) {
+    if (!improvement) return;
     
-    logger.info(`🧠 Trend recebeu aprendizado de ${learning.agentId}: ${learning.content}`, { service: "TradeExecutor" });
+    logger.info(`🧠 Trend recebeu melhoria do LearningBrain: ${improvement.recommendation}`, { service: "TradeExecutor" });
     
-    // Se outro agente está com alta performance, ajusta parâmetros internos
-    if (learning.type === "strategy_performance" && learning.confidence > 0.7) {
-      const winRate = learning.data?.winRate || 0;
-      
-      if (winRate > 70) {
-        logger.info(`✨ Trend aumentando confiança baseado no sucesso de ${learning.agentId} (${winRate}% win rate)`, { service: "TradeExecutor" });
+    switch(improvement.recommendation) {
+      case "AUMENTAR_TAMANHO_POSICAO":
+        // Aumenta temporariamente o multiplicador de tamanho
+        this.tempSizeMultiplier = Math.min(1.5, (this.tempSizeMultiplier || 1) + 0.1);
+        logger.info(`📈 Trend aumentando tamanho de posição: ${this.tempSizeMultiplier}x`, { service: "TradeExecutor" });
+        break;
         
-        // Emite melhoria para o próprio Trend se ajustar
-        eventBus.emit("improvement:broadcast", {
-          sourceAgent: learning.agentId,
-          recommendation: "AUMENTAR_SENSIBILIDADE",
-          affectedAgents: ["trend"],
-          confidence: learning.confidence,
-          timestamp: Date.now()
-        });
-      } else if (winRate < 40) {
-        logger.info(`⚠️ Trend reduzindo risco baseado no desempenho ruim de ${learning.agentId}`, { service: "TradeExecutor" });
+      case "REDUZIR_TAMANHO_POSICAO_E_AGUARDAR_CONFIRMACAO":
+        this.tempSizeMultiplier = Math.max(0.5, (this.tempSizeMultiplier || 1) - 0.2);
+        logger.info(`📉 Trend reduzindo tamanho de posição: ${this.tempSizeMultiplier}x`, { service: "TradeExecutor" });
+        break;
         
-        eventBus.emit("improvement:broadcast", {
-          sourceAgent: learning.agentId,
-          recommendation: "REDUZIR_RISCO",
-          affectedAgents: ["trend"],
-          confidence: learning.confidence,
-          timestamp: Date.now()
-        });
-      }
+      case "AUMENTAR_SENSIBILIDADE_SPREAD_E_VELOCIDADE":
+        // Aumenta confiança base para sinais
+        this.baseConfidenceBoost = Math.min(15, (this.baseConfidenceBoost || 0) + 5);
+        logger.info(`⚡ Trend aumentando sensibilidade: +${this.baseConfidenceBoost}% confiança`, { service: "TradeExecutor" });
+        break;
+        
+      case "REDUZIR_RISCO":
+        this.tempSizeMultiplier = Math.max(0.5, (this.tempSizeMultiplier || 1) * 0.8);
+        logger.info(`⚠️ Trend reduzindo risco: ${this.tempSizeMultiplier}x`, { service: "TradeExecutor" });
+        break;
+        
+      default:
+        logger.debug(`Melhoria recebida: ${improvement.recommendation}`, { service: "TradeExecutor" });
     }
     
-    // Se recebeu daily settlement do HFT
-    if (learning.type === "daily_settlement" && learning.data?.amount > 0) {
-      logger.info(`💰 Trend registrou recebimento de $${learning.data.amount} do HFT`, { service: "TradeExecutor" });
-    }
+    // Reseta ajustes temporários após 1 hora
+    setTimeout(() => {
+      this.tempSizeMultiplier = 1;
+      this.baseConfidenceBoost = 0;
+      logger.info(`🔄 Trend resetou ajustes temporários`, { service: "TradeExecutor" });
+    }, 3600000);
   }
 
   async handleSignal(signal) {
@@ -150,13 +153,45 @@ class TradeExecutorService {
     
     const agent = signal.agent || this._getAgentFromStrategy(signal.strategy);
     
+    // 🔥 CHAMA LEARNING BRAIN PARA PREDIZER O SINAL
+    let prediction = null;
+    if (learningBrain && learningBrain.predictSignal) {
+      try {
+        prediction = learningBrain.predictSignal({
+          symbol: signal.symbol,
+          type: signal.type,
+          confidence: signal.confidence,
+          strategy: signal.strategy,
+          agent: agent
+        });
+        
+        if (prediction) {
+          logger.info(`🧠 LearningBrain prediction: ${prediction.recommendation} (padrão: ${prediction.patternUsed || "nenhum"}, win rate esperado: ${prediction.predictedWinRate}%)`, { service: "TradeExecutor" });
+          
+          // 🔥 SE O LEARNING BRAIN RECOMENDA PULAR, NÃO EXECUTA
+          if (prediction.recommendation === "SKIP") {
+            logger.info(`⏭️ LearningBrain recomendou pular: ${prediction.patternUsed || "no pattern"}`, { service: "TradeExecutor" });
+            return;
+          }
+          
+          // 🔥 SE RECOMENDA AGUARDAR, TAMBÉM NÃO EXECUTA AGORA
+          if (prediction.recommendation === "WAIT") {
+            logger.info(`⏸️ LearningBrain recomendou aguardar`, { service: "TradeExecutor" });
+            return;
+          }
+        }
+      } catch (err) {
+        logger.error(`Erro no LearningBrain.predictSignal: ${err.message}`, { service: "TradeExecutor" });
+      }
+    }
+    
     const result = await this.executeTrade({
       symbol: signal.symbol,
       side: signal.type,
       strategy: signal.strategy,
       confidence: signal.confidence,
       agent: agent,
-      prediction: null
+      prediction: prediction
     });
     
     if (result.success) {
@@ -172,7 +207,7 @@ class TradeExecutorService {
           strategy: signal.strategy,
           confidence: signal.confidence,
           agent: agent,
-          prediction: null,
+          prediction: prediction,
           timestamp: Date.now(),
           originalSignal: signal
         });
@@ -250,13 +285,21 @@ class TradeExecutorService {
     let adjustedConfidence = confidence;
     let sizeMultiplier = 1.0;
     
+    // 🔥 APLICA AJUSTES DO LEARNING BRAIN
+    if (this.tempSizeMultiplier) {
+      sizeMultiplier = sizeMultiplier * this.tempSizeMultiplier;
+    }
+    if (this.baseConfidenceBoost) {
+      adjustedConfidence = Math.min(98, adjustedConfidence + this.baseConfidenceBoost);
+    }
+    
     if (performance.consecutiveWins >= 3) {
-      sizeMultiplier = Math.min(1.5, 1 + (performance.consecutiveWins * 0.1));
-      adjustedConfidence = Math.min(98, confidence + (performance.consecutiveWins * 2));
+      sizeMultiplier = Math.min(1.5, sizeMultiplier * (1 + (performance.consecutiveWins * 0.1)));
+      adjustedConfidence = Math.min(98, adjustedConfidence + (performance.consecutiveWins * 2));
       logger.info(`📈 ${agent} em sequência de ${performance.consecutiveWins} lucros! Multiplicador: ${sizeMultiplier}x, Confiança ajustada: ${adjustedConfidence}%`, { service: "TradeExecutor" });
     } else if (performance.consecutiveLosses >= 2) {
-      sizeMultiplier = Math.max(0.5, 1 - (performance.consecutiveLosses * 0.2));
-      adjustedConfidence = Math.max(50, confidence - (performance.consecutiveLosses * 5));
+      sizeMultiplier = Math.max(0.5, sizeMultiplier * (1 - (performance.consecutiveLosses * 0.2)));
+      adjustedConfidence = Math.max(50, adjustedConfidence - (performance.consecutiveLosses * 5));
       logger.info(`📉 ${agent} em sequência de ${performance.consecutiveLosses} prejuízos! Multiplicador: ${sizeMultiplier}x, Confiança ajustada: ${adjustedConfidence}%`, { service: "TradeExecutor" });
       
       if (performance.consecutiveLosses >= 3) {
@@ -345,6 +388,7 @@ class TradeExecutorService {
         takeProfitPercent: cfg.takeProfit,
         sizeMultiplier: sizeMultiplier,
         predictionUsed: prediction?.patternUsed || null,
+        predictedWinRate: prediction?.predictedWinRate || null,
         timestamp: new Date().toISOString(),
         orderId: order.orderId,
       };
@@ -360,7 +404,8 @@ class TradeExecutorService {
         tradeId: trade.id,
         agent: agent,
         confidence: adjustedConfidence,
-        sizeMultiplier: sizeMultiplier
+        sizeMultiplier: sizeMultiplier,
+        patternUsed: prediction?.patternUsed || "nenhum"
       });
       
       this.dailyStats.totalTrades++;
@@ -425,7 +470,7 @@ class TradeExecutorService {
     }
   }
 
-  // 🔥 ATUALIZA PERFORMANCE E COMPARTILHA COM OUTROS AGENTES
+  // 🔥 ATUALIZA PERFORMANCE E COMPARTILHA COM LEARNING BRAIN
   _updateAgentPerformance(agent, isWin, pnl) {
     if (!this.agentPerformance[agent]) {
       this.agentPerformance[agent] = { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0, winRate: 0 };
@@ -460,25 +505,20 @@ class TradeExecutorService {
     const totalTrades = perf.totalWins + perf.totalLosses;
     perf.winRate = totalTrades > 0 ? (perf.totalWins / totalTrades) * 100 : 0;
     
-    // 🔥 COMPARTILHA APRENDIZADO COM OUTROS AGENTES (HFT, ARBITRAGE)
-    if (totalTrades > 0 && totalTrades % 10 === 0) {
-      const learningData = {
-        agentId: "trend",
-        type: "performance_update",
-        content: `Trend win rate ${perf.winRate.toFixed(0)}% após ${totalTrades} trades (${perf.consecutiveWins > 0 ? `${perf.consecutiveWins} wins seguidos` : `${perf.consecutiveLosses} losses seguidos`})`,
-        confidence: perf.winRate / 100,
-        data: {
-          winRate: perf.winRate,
-          totalTrades: totalTrades,
-          consecutiveWins: perf.consecutiveWins,
-          consecutiveLosses: perf.consecutiveLosses,
-          agent: agent
-        }
-      };
-      
-      eventBus.emit("learning:share", learningData);
-      logger.info(`📤 Trend compartilhou aprendizado: win rate ${perf.winRate.toFixed(0)}%`, { service: "TradeExecutor" });
-    }
+    // 🔥 ENVIA APRENDIZADO PARA O LEARNING BRAIN
+    eventBus.emit(`learning:${agent}`, {
+      type: "performance_update",
+      content: `${agent} win rate ${perf.winRate.toFixed(0)}% após ${totalTrades} trades`,
+      confidence: perf.winRate / 100,
+      priority: perf.consecutiveWins >= 3 ? "high" : "normal",
+      data: {
+        winRate: perf.winRate,
+        totalTrades: totalTrades,
+        consecutiveWins: perf.consecutiveWins,
+        consecutiveLosses: perf.consecutiveLosses,
+        lastProfit: pnl
+      }
+    });
     
     // Salva no banco
     if (db.updateAgentPerformance) {
