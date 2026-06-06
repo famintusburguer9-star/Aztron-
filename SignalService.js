@@ -9,13 +9,13 @@ const aiLearning = require("./AIZtronLearningService");
 
 const SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT"];
 
-// Fatores que influenciam a confiança do sinal
+// 🔥 AJUSTADO: Pesos para confiança (menos conservador)
 const CONFIDENCE_WEIGHTS = {
-  RSI: 0.25,
-  MACD: 0.25,
-  BREAKOUT: 0.20,
-  VOLUME: 0.15,
-  SENTIMENT: 0.15
+  RSI: 0.30,      // +5%
+  MACD: 0.30,     // +5%
+  BREAKOUT: 0.20, // mesmo
+  VOLUME: 0.10,   // -5%
+  SENTIMENT: 0.10 // -5%
 };
 
 class SignalService {
@@ -30,7 +30,8 @@ class SignalService {
   start() {
     if (this.running) return;
     this.running = true;
-    this._intervalId = setInterval(() => this._scan(), 15000);
+    // 🔥 AUMENTADO: scan a cada 10 segundos (antes 15)
+    this._intervalId = setInterval(() => this._scan(), 10000);
     logger.info("SignalService started", { service: "SignalService" });
   }
 
@@ -43,28 +44,22 @@ class SignalService {
     logger.info("SignalService stopped", { service: "SignalService" });
   }
 
-  // Função para normalizar strings para inglês
   _normalizeString(str, type = "status") {
     if (!str) return type === "status" ? "ACTIVE" : "UNKNOWN";
-    
     const upper = str.toUpperCase();
-    
     if (type === "status") {
       if (upper === "ATIVA" || upper === "ATIVO" || upper === "ACTIVE") return "ACTIVE";
       if (upper === "FECHADA" || upper === "CLOSED") return "CLOSED";
       return "ACTIVE";
     }
-    
     if (type === "type") {
       if (upper === "COMPRA" || upper === "BUY") return "BUY";
       if (upper === "VENDA" || upper === "SELL") return "SELL";
       return upper;
     }
-    
     return str;
   }
 
-  // Função para normalizar o sinal inteiro
   _normalizeSignal(signal) {
     return {
       id: signal.id,
@@ -85,12 +80,14 @@ class SignalService {
     try {
       const condition = marketCondition.getCondition(symbol);
       
-      if (condition && condition.regime === "ranging") {
-        logger.debug(`Market sideways for ${symbol}, skipping signals`, { service: "SignalService" });
-        return false;
-      }
+      // 🔥 REMOVIDO: bloqueio de mercado ranging (agora permite)
+      // if (condition && condition.regime === "ranging") {
+      //   logger.debug(`Market sideways for ${symbol}, skipping signals`);
+      //   return false;
+      // }
       
-      if (condition && condition.volatility < 0.3) {
+      // 🔥 REDUZIDO: volatilidade mínima de 0.1% (antes 0.3%)
+      if (condition && condition.volatility < 0.1) {
         logger.debug(`Low volatility (${condition.volatility}%) for ${symbol}, skipping`, { service: "SignalService" });
         return false;
       }
@@ -108,26 +105,29 @@ class SignalService {
     try {
       const condition = marketCondition.getCondition(symbol);
       if (condition) {
+        // 🔥 AUMENTADO: bônus para mercado trending (+12% antes +8%)
         if (condition.regime === "trending") {
-          baseConfidence += 8;
-          adjustments.push("+8% (trending market)");
+          baseConfidence += 12;
+          adjustments.push("+12% (trending market)");
         } else if (condition.regime === "ranging") {
-          baseConfidence -= 15;
-          adjustments.push("-15% (sideways market)");
+          // 🔥 REDUZIDO: penalidade para ranging (-8% antes -15%)
+          baseConfidence -= 8;
+          adjustments.push("-8% (sideways market)");
         }
         
+        // 🔥 AUMENTADO: bônus de alinhamento com tendência (+15% antes +10%)
         if (result.signal === "BUY" && condition.trend === "bullish") {
-          baseConfidence += 10;
-          adjustments.push("+10% (trend aligned)");
+          baseConfidence += 15;
+          adjustments.push("+15% (trend aligned)");
         } else if (result.signal === "SELL" && condition.trend === "bearish") {
-          baseConfidence += 10;
-          adjustments.push("+10% (trend aligned)");
+          baseConfidence += 15;
+          adjustments.push("+15% (trend aligned)");
         } else if (result.signal === "BUY" && condition.trend === "bearish") {
-          baseConfidence -= 10;
-          adjustments.push("-10% (counter-trend)");
+          baseConfidence -= 5;  // 🔥 REDUZIDO: penalidade menor (-5% antes -10%)
+          adjustments.push("-5% (counter-trend)");
         } else if (result.signal === "SELL" && condition.trend === "bullish") {
-          baseConfidence -= 10;
-          adjustments.push("-10% (counter-trend)");
+          baseConfidence -= 5;
+          adjustments.push("-5% (counter-trend)");
         }
       }
       
@@ -135,18 +135,19 @@ class SignalService {
         const sentimentService = require("./SentimentService");
         const sentiment = sentimentService.getSentiment();
         
-        if (result.signal === "BUY" && sentiment.fearGreedIndex < 30) {
-          baseConfidence += 12;
-          adjustments.push("+12% (extreme fear = buy opportunity)");
-        } else if (result.signal === "BUY" && sentiment.fearGreedIndex > 70) {
-          baseConfidence -= 15;
-          adjustments.push("-15% (extreme greed = avoid buying)");
-        } else if (result.signal === "SELL" && sentiment.fearGreedIndex > 70) {
-          baseConfidence += 10;
-          adjustments.push("+10% (greed = sell opportunity)");
-        } else if (result.signal === "SELL" && sentiment.fearGreedIndex < 30) {
-          baseConfidence -= 10;
-          adjustments.push("-10% (fear = avoid selling)");
+        // 🔥 AJUSTADO: limites mais agressivos
+        if (result.signal === "BUY" && sentiment.fearGreedIndex < 35) {  // antes 30
+          baseConfidence += 15;  // antes 12
+          adjustments.push("+15% (fear = buy opportunity)");
+        } else if (result.signal === "BUY" && sentiment.fearGreedIndex > 75) { // antes 70
+          baseConfidence -= 10; // antes -15
+          adjustments.push("-10% (extreme greed = cautious)");
+        } else if (result.signal === "SELL" && sentiment.fearGreedIndex > 65) { // antes 70
+          baseConfidence += 12; // antes 10
+          adjustments.push("+12% (greed = sell opportunity)");
+        } else if (result.signal === "SELL" && sentiment.fearGreedIndex < 35) { // antes 30
+          baseConfidence -= 8; // antes -10
+          adjustments.push("-8% (fear = avoid selling)");
         }
       } catch (e) {}
       
@@ -159,11 +160,11 @@ class SignalService {
         });
         
         if (prediction && prediction.recommendation === "FOLLOW") {
-          baseConfidence += 5;
-          adjustments.push(`+5% (AI pattern match: ${prediction.patternUsed})`);
+          baseConfidence += 8; // antes 5
+          adjustments.push(`+8% (AI pattern match: ${prediction.patternUsed})`);
         } else if (prediction && prediction.recommendation === "SKIP") {
-          baseConfidence -= 10;
-          adjustments.push("-10% (AI recommends skip)");
+          baseConfidence -= 5; // antes -10
+          adjustments.push("-5% (AI recommends skip)");
         }
       } catch (e) {}
       
@@ -171,7 +172,8 @@ class SignalService {
       logger.warn(`Confidence calculation error: ${error.message}`, { service: "SignalService" });
     }
     
-    const finalConfidence = Math.min(95, Math.max(35, Math.round(baseConfidence)));
+    // 🔥 AJUSTADO: limites mais amplos (30-98% antes 35-95%)
+    const finalConfidence = Math.min(98, Math.max(30, Math.round(baseConfidence)));
     
     if (adjustments.length > 0) {
       logger.debug(`Confidence for ${symbol}: ${result.confidence}% → ${finalConfidence}% (${adjustments.join(", ")})`, {
@@ -189,7 +191,8 @@ class SignalService {
       
       for (const strategy of strategies) {
         const result = strategy.analyze(symbol);
-        if (result && result.confidence > 50) {
+        // 🔥 REDUZIDO: confiança mínima para considerar (40% antes 50%)
+        if (result && result.confidence > 40) {
           results.push({
             signal: result.signal,
             confidence: result.confidence,
@@ -210,7 +213,8 @@ class SignalService {
         return {
           consensus: true,
           signal: allBuy ? "BUY" : "SELL",
-          confidence: Math.min(90, Math.round(avgConfidence + 10)),
+          // 🔥 AUMENTADO: bônus de consenso +15% (antes +10%)
+          confidence: Math.min(95, Math.round(avgConfidence + 15)),
           strategies: strategiesList,
           count: results.length
         };
@@ -227,10 +231,12 @@ class SignalService {
   }
 
   _getPositionSizeMultiplier(confidence) {
-    if (confidence >= 85) return 1.2;
-    if (confidence >= 75) return 1.0;
-    if (confidence >= 60) return 0.7;
-    return 0.0;
+    // 🔥 AJUSTADO: multiplicadores maiores
+    if (confidence >= 85) return 1.5;   // antes 1.2
+    if (confidence >= 75) return 1.2;   // antes 1.0
+    if (confidence >= 60) return 0.9;   // antes 0.7
+    if (confidence >= 50) return 0.7;   // NOVO: para sinais mais fracos
+    return 0.5;                          // antes 0.0
   }
 
   _scan() {
@@ -241,7 +247,8 @@ class SignalService {
       
       const consensus = this._checkConsensus(sym);
       
-      if (consensus && consensus.consensus && consensus.confidence > 70) {
+      // 🔥 REDUZIDO: confiança mínima para consenso (65% antes 70%)
+      if (consensus && consensus.consensus && consensus.confidence > 65) {
         const finalConfidence = this._calculateRealConfidence(
           { signal: consensus.signal, confidence: consensus.confidence, strategy: "CONSENSUS" },
           sym
@@ -271,11 +278,13 @@ class SignalService {
         try {
           const result = strategy.analyze(sym);
           
-          if (result && result.confidence > 65) {
+          // 🔥 REDUZIDO: confiança mínima para sinal individual (55% antes 65%)
+          if (result && result.confidence > 55) {
             const finalConfidence = this._calculateRealConfidence(result, sym);
             
-            if (finalConfidence < 60) {
-              logger.debug(`Signal ${result.signal} ${sym} rejected: final confidence ${finalConfidence}% < 60%`, {
+            // 🔥 REDUZIDO: confiança mínima final (55% antes 60%)
+            if (finalConfidence < 55) {
+              logger.debug(`Signal ${result.signal} ${sym} rejected: final confidence ${finalConfidence}% < 55%`, {
                 service: "SignalService"
               });
               continue;
@@ -312,7 +321,6 @@ class SignalService {
   }
 
   _emitSignal(signal) {
-    // Normaliza o sinal para garantir campos em inglês
     const normalizedSignal = this._normalizeSignal(signal);
     
     this.activeSignals.unshift(normalizedSignal);
