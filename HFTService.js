@@ -11,12 +11,12 @@ const learningBrain = require("./LearningBrainService");
 const HFT_CONFIG = {
   SYMBOLS: ["BTCUSDT", "ETHUSDT", "BNBUSDT"],
   TIMEFRAMES: ["1m", "5m", "15m", "1h"],
-  MAX_POSITION_SIZE: 0.02,        // Máximo 2% do capital por trade
-  STOP_LOSS: 0.003,               // 0.3% stop loss
-  TAKE_PROFIT: 0.006,             // 0.6% take profit
-  MIN_CONFIDENCE: 65,             // Confiança mínima para operar
-  MAX_TRADES_PER_HOUR: 10,        // Máximo de trades por hora
-  COOLDOWN_SECONDS: 60,           // Cooldown entre trades do mesmo símbolo
+  MAX_POSITION_SIZE: 0.05,        // Máximo 2% do capital por trade
+  STOP_LOSS: 0.005,               // 0.3% stop loss
+  TAKE_PROFIT: 0.001,             // 0.6% take profit
+  MIN_CONFIDENCE: 50,             // Confiança mínima para operar
+  MAX_TRADES_PER_HOUR: 20,        // Máximo de trades por hora
+  COOLDOWN_SECONDS: 30,           // Cooldown entre trades do mesmo símbolo
 };
 
 // ─── ESTRATÉGIAS HFT ─────────────────────────────────────────────────────────
