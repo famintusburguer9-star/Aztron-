@@ -8,7 +8,10 @@ class Orchestrator {
     this.startTime = null;
     this.services = {};
     this.serviceOrder = [
-      // 🆕 1. SERVIÇOS BASE (devem iniciar primeiro)
+      // 0. EXCHANGE (BASE - DEVE SER O PRIMEIRO)
+      { name: "exchangeAdapter", path: "./ExchangeAdapterService", required: true },
+      
+      // 1. SERVIÇOS BASE (devem iniciar logo após exchange)
       { name: "capitalDistributor", path: "./CapitalDistributorService", required: true },
       { name: "learningBrain", path: "./LearningBrainService", required: true },
       
@@ -83,17 +86,24 @@ class Orchestrator {
       }
     }
     
-    // 🆕 ESCUTA TRADES PARA APRENDIZADO
+    // ESCUTA TRADES PARA APRENDIZADO
     eventBus.on("trade", ({ action, trade }) => {
       if (action === "CLOSE" && this.services.aiLearning) {
         this.services.aiLearning.learnFromTrade(trade);
       }
     });
     
-    // 🆕 ESCUTA EVENTOS DE LUCRO PARA TOKENOMICS
+    // ESCUTA EVENTOS DE LUCRO PARA TOKENOMICS
     eventBus.on("agent:profit", (profitData) => {
       if (this.services.tokenomics && this.services.tokenomics.processProfit) {
         this.services.tokenomics.processProfit(profitData.amount, profitData.agentId);
+      }
+    });
+    
+    // ESCUTA EVENTOS DE TICK PARA EXCHANGE (opcional)
+    eventBus.on("tick", (prices) => {
+      if (this.services.exchangeAdapter && this.services.exchangeAdapter.updatePrices) {
+        this.services.exchangeAdapter.updatePrices?.(prices);
       }
     });
     
@@ -116,7 +126,7 @@ class Orchestrator {
     const startedServices = [];
     const failedServices = [];
     
-    // 🆕 INICIA SERVIÇOS NA ORDEM CORRETA
+    // INICIA SERVIÇOS NA ORDEM CORRETA
     for (const service of this.serviceOrder) {
       const instance = this.services[service.name];
       if (!instance) continue;
@@ -146,7 +156,21 @@ class Orchestrator {
       }
     }
     
-    // 🆕 EMITE EVENTO DE STATUS
+    // 🔥 VERIFICA ESPECÍFICA DO TRADE EXECUTOR
+    if (this.services.tradeExecutor && !this.services.tradeExecutor.running) {
+      logger.warn(`⚠️ TradeExecutor não está rodando! Tentando iniciar novamente...`, { service: "Orchestrator" });
+      try {
+        await this.services.tradeExecutor.start();
+        if (!startedServices.includes("tradeExecutor")) {
+          startedServices.push("tradeExecutor");
+        }
+        logger.info(`✅ TradeExecutor iniciado com sucesso na segunda tentativa`, { service: "Orchestrator" });
+      } catch (err) {
+        logger.error(`❌ Falha ao iniciar TradeExecutor: ${err.message}`, { service: "Orchestrator" });
+      }
+    }
+    
+    // EMITE EVENTO DE STATUS
     eventBus.emit("engine:status", { 
       running: true, 
       timestamp: new Date().toISOString(),
@@ -183,7 +207,7 @@ class Orchestrator {
     this.running = false;
     const stoppedServices = [];
     
-    // 🆕 PARA SERVIÇOS NA ORDEM INVERSA
+    // PARA SERVIÇOS NA ORDEM INVERSA
     for (let i = this.serviceOrder.length - 1; i >= 0; i--) {
       const service = this.serviceOrder[i];
       const instance = this.services[service.name];
@@ -217,13 +241,13 @@ class Orchestrator {
   }
 
   getStatus() {
-    // 🆕 OBTÉM ESTATÍSTICAS DOS SERVIÇOS
+    // OBTÉM ESTATÍSTICAS DOS SERVIÇOS
     const metrics = this.services.observability?.getMetrics?.() || {};
     const portfolio = this.services.portfolio?.getSummary?.() || {};
     const capitalStatus = this.services.capitalDistributor?.getStatus?.() || {};
     const learningStatus = this.services.learningBrain?.getStatus?.() || {};
     
-    // 🆕 CONTA SERVIÇOS ATIVOS
+    // CONTA SERVIÇOS ATIVOS
     let activeServices = 0;
     for (const service of this.serviceOrder) {
       const instance = this.services[service.name];
@@ -245,11 +269,12 @@ class Orchestrator {
         patternsFound: learningStatus?.totalPatterns || 0,
         insightsCount: learningStatus?.totalInsights || 0
       },
+      tradeExecutorRunning: this.services.tradeExecutor?.running || false,
       ...portfolio,
     };
   }
   
-  // 🆕 CALCULA UPTIME
+  // CALCULA UPTIME
   _calculateUptime() {
     if (!this.startTime) return "0d 0h 0m";
     const diff = Date.now() - this.startTime;
@@ -259,7 +284,7 @@ class Orchestrator {
     return `${days}d ${hours}h ${minutes}m`;
   }
   
-  // 🆕 OBTÉM LISTA DE SERVIÇOS E SEUS STATUS
+  // OBTÉM LISTA DE SERVIÇOS E SEUS STATUS
   getServicesStatus() {
     const servicesStatus = [];
     for (const service of this.serviceOrder) {
@@ -272,6 +297,23 @@ class Orchestrator {
       });
     }
     return servicesStatus;
+  }
+  
+  // 🔥 MÉTODO PARA VERIFICAR SAÚDE DOS SERVIÇOS CRÍTICOS
+  getCriticalServicesStatus() {
+    const criticalServices = ["exchangeAdapter", "capitalDistributor", "tradeExecutor", "signalService", "riskManagement"];
+    const status = {};
+    
+    for (const serviceName of criticalServices) {
+      const instance = this.services[serviceName];
+      status[serviceName] = {
+        loaded: !!instance,
+        running: instance ? (instance.isRunning === true || instance.running === true) : false,
+        required: true
+      };
+    }
+    
+    return status;
   }
 }
 
