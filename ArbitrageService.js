@@ -17,17 +17,20 @@ class ArbitrageService {
     this.lastScanTime = 0;
     this.lastTradeTime = 0;
     
-    // Configurações
-    this.scanInterval = 20000;           // 20 segundos
-    this.tradeCooldown = 60000;          // 60 segundos
+    // 🔥 CONFIGURAÇÕES MAIS AGRESSIVAS
+    this.scanInterval = 10000;           // 10 segundos (antes 20s)
+    this.tradeCooldown = 30000;          // 30 segundos (antes 60s)
     
-    this.minSpread = 0.3;                // 0.3%
-    this.maxPositionPerTrade = 1000;     // $1000
+    this.minSpread = 0.15;               // 🔥 0.15% (antes 0.3%)
+    this.maxPositionPerTrade = 2000;     // 🔥 $2000 (antes $1000)
     this.consecutiveLosses = 0;
     this.opportunities = [];
     this.tradeHistory = [];
     
-    // Fila de oportunidades pendentes (quando falta saldo)
+    // 🔥 MAIS SÍMBOLOS PARA ESCANEAR
+    this.symbolsToScan = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"];
+    
+    // Fila de oportunidades pendentes
     this.pendingOpportunities = [];
     
     // Ajustes temporários do LearningBrain
@@ -35,11 +38,11 @@ class ArbitrageService {
     this.tempSpreadAdjustment = 1.0;
     
     this.learningParams = {
-      spreadThreshold: 0.3,
-      riskMultiplier: 1.2,
+      spreadThreshold: 0.15,  // 🔥 reduzido para 0.15%
+      riskMultiplier: 1.5,    // 🔥 aumentado para 1.5
     };
     
-    // 🔥 ESCUTA ALOCAÇÃO DE CAPITAL - INICIA AUTOMATICAMENTE
+    // 🔥 ESCUTA ALOCAÇÃO DE CAPITAL
     EventBus.on(`capital:${this.agentId}:allocated`, (data) => {
       this.capitalAllocated = data.amount;
       this.logger.info(`💰 Arbitrage recebeu capital: $${this.capitalAllocated} (${data.mode} MODE)`, { service: "Arbitrage" });
@@ -50,7 +53,7 @@ class ArbitrageService {
       }
     });
     
-    // 🔥 ESCUTA RETORNO DE CAPITAL (quando trade fecha)
+    // 🔥 ESCUTA RETORNO DE CAPITAL
     EventBus.on("capital:return", ({ agentId, amount, reason }) => {
       if (agentId === this.agentId && amount !== 0) {
         this.capitalAllocated += amount;
@@ -66,7 +69,6 @@ class ArbitrageService {
       }
     });
     
-    // 🔥 ESCUTA MELHORIAS DIRETAS
     EventBus.on(`improvement:${this.agentId}`, (improvement) => {
       this.applyImprovement(improvement);
     });
@@ -76,10 +78,9 @@ class ArbitrageService {
       this.onSentimentExtreme(sentiment);
     });
     
-    this.logger.info("ArbitrageService initialized - MODO AGRESSIVO (spread 0.3%)", { service: "Arbitrage" });
+    this.logger.info("ArbitrageService initialized - MODO AGRESSIVO (spread 0.15%)", { service: "Arbitrage" });
   }
 
-  // 🔥 INICIALIZAÇÃO
   async initialize() {
     if (this.initialized) return { success: true, capital: this.capitalAllocated };
     
@@ -107,17 +108,16 @@ class ArbitrageService {
 
   onSentimentExtreme(sentiment) {
     if (sentiment.type === "EXTREME_FEAR") {
-      this.learningParams.spreadThreshold = 0.2;
-      this.learningParams.riskMultiplier = 1.5;
+      this.learningParams.spreadThreshold = 0.1;
+      this.learningParams.riskMultiplier = 1.8;
       this.logger.info(`📉 Arbitrage ajustou spreadThreshold para ${this.learningParams.spreadThreshold}% (extreme fear)`, { service: "Arbitrage" });
     } else if (sentiment.type === "EXTREME_GREED") {
-      this.learningParams.spreadThreshold = 0.4;
-      this.learningParams.riskMultiplier = 0.8;
+      this.learningParams.spreadThreshold = 0.25;
+      this.learningParams.riskMultiplier = 1.2;
       this.logger.info(`📈 Arbitrage ajustou spreadThreshold para ${this.learningParams.spreadThreshold}% (extreme greed)`, { service: "Arbitrage" });
     }
   }
 
-  // 🔥 APLICA MELHORIAS DO LEARNING BRAIN
   applyImprovement(improvement) {
     if (!improvement) return;
     
@@ -126,21 +126,20 @@ class ArbitrageService {
     switch(improvement.recommendation) {
       case "AUMENTAR_SENSIBILIDADE":
       case "AUMENTAR_SENSIBILIDADE_SPREAD_E_VELOCIDADE":
-        this.tempSpreadAdjustment = Math.max(0.5, this.tempSpreadAdjustment * 0.8);
-        this.scanInterval = Math.max(10000, this.scanInterval * 0.8);
-        this.logger.info(`⚡ Arbitrage aumentou sensibilidade: spreadThreshold ajuste=${this.tempSpreadAdjustment}x, scanInterval=${this.scanInterval}ms`, { service: "Arbitrage" });
+        this.tempSpreadAdjustment = Math.max(0.5, this.tempSpreadAdjustment * 0.7);
+        this.scanInterval = Math.max(5000, this.scanInterval * 0.7);
+        this.logger.info(`⚡ Arbitrage aumentou sensibilidade: spread ajuste=${this.tempSpreadAdjustment}x, scan=${this.scanInterval}ms`, { service: "Arbitrage" });
         break;
         
       case "REDUZIR_RISCO":
       case "REDUZIR_TAMANHO_POSICAO_E_AGUARDAR_CONFIRMACAO":
         this.tempRiskMultiplier = Math.max(0.5, this.tempRiskMultiplier * 0.7);
-        this.maxPositionPerTrade = Math.max(200, this.maxPositionPerTrade * 0.7);
+        this.maxPositionPerTrade = Math.max(500, this.maxPositionPerTrade * 0.7);
         this.logger.info(`📉 Arbitrage reduziu risco: riskMultiplier=${this.tempRiskMultiplier}x, maxPosition=$${this.maxPositionPerTrade}`, { service: "Arbitrage" });
         break;
         
       case "REVISAR_TODAS_POSICOES_E_CONSIDERAR_CONTRA_TREND":
         this.logger.info(`⚠️ Arbitrage em alerta: revisando todas posições`, { service: "Arbitrage" });
-        // Pausa temporária para revisão
         setTimeout(() => {
           this.logger.info(`🔄 Arbitrage retomando operações após revisão`, { service: "Arbitrage" });
         }, 300000);
@@ -150,7 +149,6 @@ class ArbitrageService {
         this.logger.debug(`Melhoria recebida: ${improvement.recommendation}`, { service: "Arbitrage" });
     }
     
-    // Reseta ajustes temporários após 1 hora
     setTimeout(() => {
       this.tempRiskMultiplier = 1.0;
       this.tempSpreadAdjustment = 1.0;
@@ -158,7 +156,6 @@ class ArbitrageService {
     }, 3600000);
   }
 
-  // 🔥 COMPARTILHA APRENDIZADO COM LEARNING BRAIN
   shareLearning() {
     const recentTrades = this.tradeHistory.filter(t => t.isWin !== undefined).slice(-20);
     const wins = recentTrades.filter(t => t.isWin).length;
@@ -167,25 +164,22 @@ class ArbitrageService {
     if (recentTrades.length >= 5) {
       const learningData = {
         type: "performance_update",
-        content: `Arbitrage win rate ${winRate.toFixed(0)}% nos últimos ${recentTrades.length} trades (spread threshold: ${this.learningParams.spreadThreshold}%)`,
+        content: `Arbitrage win rate ${winRate.toFixed(0)}% nos últimos ${recentTrades.length} trades`,
         confidence: Math.min(0.95, winRate / 100),
         priority: winRate > 65 ? "high" : winRate < 40 ? "high" : "normal",
         data: {
           winRate: winRate,
           totalTrades: recentTrades.length,
           spreadThreshold: this.learningParams.spreadThreshold,
-          consecutiveLosses: this.consecutiveLosses,
-          avgProfit: wins > 0 ? recentTrades.filter(t => t.isWin).reduce((s, t) => s + t.actualProfit, 0) / wins : 0
+          consecutiveLosses: this.consecutiveLosses
         }
       };
       
-      // 🔥 ENVIA PARA O LEARNING BRAIN (evento específico)
       EventBus.emit(`learning:${this.agentId}`, learningData);
       this.logger.info(`📤 Arbitrage compartilhou aprendizado: win rate ${winRate.toFixed(0)}%`, { service: "Arbitrage" });
     }
   }
 
-  // 🔥 PROCESSA OPORTUNIDADES PENDENTES
   _processPendingOpportunities() {
     if (this.pendingOpportunities.length === 0) return;
     
@@ -246,37 +240,41 @@ class ArbitrageService {
     try {
       if (this.capitalAllocated <= 0) return;
       
-      const opportunity = await this.exchange.getArbitrageOpportunity("BTCUSDT");
-      
-      if (!opportunity) return;
-      
-      const effectiveThreshold = this.learningParams.spreadThreshold * this.tempSpreadAdjustment;
-      const adjustedThreshold = effectiveThreshold * this.learningParams.riskMultiplier * this.tempRiskMultiplier;
-      
-      if (opportunity.spread > adjustedThreshold && this.capitalAllocated > 50) {
-        const estimatedProfit = this.capitalAllocated * opportunity.spread / 100;
-        const capitalRequired = Math.min(this.capitalAllocated, this.maxPositionPerTrade);
+      // 🔥 ESCANEIA MÚLTIPLOS SÍMBOLOS
+      for (const symbol of this.symbolsToScan) {
+        const opportunity = await this.exchange.getArbitrageOpportunity(symbol);
         
-        this.logger.info(`💰 OPORTUNIDADE: spread ${opportunity.spread}% | Lucro estimado: $${estimatedProfit.toFixed(2)}`, { service: "Arbitrage" });
-        this.logger.info(`   Comprar em: ${opportunity.buyExchange} | Vender em: ${opportunity.sellExchange}`, { service: "Arbitrage" });
+        if (!opportunity) continue;
         
-        const opp = {
-          id: `arb_${Date.now()}`,
-          spread: opportunity.spread,
-          pair: opportunity.symbol,
-          estimatedProfit: estimatedProfit,
-          capitalRequired: capitalRequired,
-          buyExchange: opportunity.buyExchange,
-          sellExchange: opportunity.sellExchange,
-          timestamp: Date.now()
-        };
+        const effectiveThreshold = this.learningParams.spreadThreshold * this.tempSpreadAdjustment;
+        const adjustedThreshold = effectiveThreshold * this.learningParams.riskMultiplier * this.tempRiskMultiplier;
         
-        this.opportunities.unshift(opp);
-        if (this.opportunities.length > 50) this.opportunities.pop();
-        
-        EventBus.emit("arbitrage:opportunity", opp);
-        
-        await this.executeTrade(opp);
+        if (opportunity.spread > adjustedThreshold && this.capitalAllocated > 50) {
+          const estimatedProfit = this.capitalAllocated * opportunity.spread / 100;
+          const capitalRequired = Math.min(this.capitalAllocated, this.maxPositionPerTrade);
+          
+          this.logger.info(`💰 OPORTUNIDADE em ${symbol}: spread ${opportunity.spread}% | Lucro estimado: $${estimatedProfit.toFixed(2)}`, { service: "Arbitrage" });
+          this.logger.info(`   Comprar em: ${opportunity.buyExchange} | Vender em: ${opportunity.sellExchange}`, { service: "Arbitrage" });
+          
+          const opp = {
+            id: `arb_${Date.now()}_${symbol}`,
+            spread: opportunity.spread,
+            pair: symbol,
+            estimatedProfit: estimatedProfit,
+            capitalRequired: capitalRequired,
+            buyExchange: opportunity.buyExchange,
+            sellExchange: opportunity.sellExchange,
+            timestamp: Date.now()
+          };
+          
+          this.opportunities.unshift(opp);
+          if (this.opportunities.length > 50) this.opportunities.pop();
+          
+          EventBus.emit("arbitrage:opportunity", opp);
+          
+          await this.executeTrade(opp);
+          break; // Sai do loop após encontrar uma oportunidade
+        }
       }
     } catch (err) {
       this.logger.error("Erro ao escanear:", err);
@@ -294,7 +292,7 @@ class ArbitrageService {
       return;
     }
     
-    const capitalRequest = await this.requestCapital(opportunity.capitalRequired, `Arbitrage: spread ${opportunity.spread}%`);
+    const capitalRequest = await this.requestCapital(opportunity.capitalRequired, `Arbitrage: spread ${opportunity.spread}% em ${opportunity.pair}`);
     
     if (!capitalRequest.success) {
       this.logger.warn(`Trade rejeitado: ${capitalRequest.reason}`, { service: "Arbitrage" });
@@ -308,7 +306,7 @@ class ArbitrageService {
     
     this.lastTradeTime = now;
     
-    // Calcula chance de lucro baseada no spread e ajustes
+    // Calcula chance de lucro baseada no spread
     const baseWinChance = 0.55 + (opportunity.spread / 100);
     const winChance = Math.min(0.85, baseWinChance * this.tempRiskMultiplier);
     const isWin = Math.random() < winChance;
@@ -319,6 +317,7 @@ class ArbitrageService {
     const trade = {
       id: `arb_trade_${Date.now()}`,
       agentId: this.agentId,
+      pair: opportunity.pair,
       spread: opportunity.spread,
       estimatedProfit: opportunity.estimatedProfit,
       actualProfit: profit,
@@ -332,10 +331,9 @@ class ArbitrageService {
     if (profit > 0) {
       this.dailyProfit += profit;
       this.consecutiveLosses = 0;
-      this.logger.info(`✅ Arbitrage lucrou: $${profit.toFixed(2)} (spread: ${opportunity.spread}%)`, { service: "Arbitrage" });
+      this.logger.info(`✅ Arbitrage lucrou: $${profit.toFixed(2)} (spread: ${opportunity.spread}% em ${opportunity.pair})`, { service: "Arbitrage" });
       EventBus.emit("agent:profit", { agentId: this.agentId, amount: profit, tradeId: trade.id });
       
-      // Sequência de lucros
       const recentWins = this.tradeHistory.filter(t => t.isWin).slice(0, 3).length;
       if (recentWins >= 3) {
         this.logger.info(`📈 Arbitrage em sequência de lucros!`, { service: "Arbitrage" });
@@ -344,11 +342,7 @@ class ArbitrageService {
     } else {
       this.dailyLoss += Math.abs(profit);
       this.consecutiveLosses++;
-      this.logger.warn(`❌ Arbitrage perdeu: $${Math.abs(profit).toFixed(2)} (spread: ${opportunity.spread}%)`, { service: "Arbitrage" });
-      
-      if (this.consecutiveLosses >= 2) {
-        this.logger.warn(`⚠️ ${this.consecutiveLosses} perdas consecutivas!`, { service: "Arbitrage" });
-      }
+      this.logger.warn(`❌ Arbitrage perdeu: $${Math.abs(profit).toFixed(2)} (spread: ${opportunity.spread}% em ${opportunity.pair})`, { service: "Arbitrage" });
       
       if (this.consecutiveLosses >= 3) {
         this.logger.warn(`🚨 Arbitrage: 3 perdas consecutivas! Pausando temporariamente...`, { service: "Arbitrage" });
@@ -358,7 +352,6 @@ class ArbitrageService {
       }
     }
     
-    // Compartilha aprendizado a cada 5 trades
     if (this.tradeHistory.length % 5 === 0 && this.tradeHistory.length > 0) {
       this.shareLearning();
     }
@@ -392,7 +385,8 @@ class ArbitrageService {
       totalTrades: this.tradeHistory.length,
       opportunitiesFound: this.opportunities.length,
       pendingOpportunities: this.pendingOpportunities.length,
-      consecutiveLosses: this.consecutiveLosses
+      consecutiveLosses: this.consecutiveLosses,
+      symbolsScanned: this.symbolsToScan
     };
   }
 
