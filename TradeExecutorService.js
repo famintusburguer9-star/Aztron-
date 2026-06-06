@@ -22,11 +22,11 @@ class TradeExecutorService {
     
     // 🆕 HISTÓRICO DE PERFORMANCE POR AGENTE
     this.agentPerformance = {
-      trend: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0 },
-      hft: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0 },
-      arbitrage: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0 },
-      deep: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0 },
-      sentiment: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0 }
+      trend: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0, winRate: 0 },
+      hft: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0, winRate: 0 },
+      arbitrage: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0, winRate: 0 },
+      deep: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0, winRate: 0 },
+      sentiment: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0, winRate: 0 }
     };
     
     this.dailyStats = {
@@ -62,22 +62,72 @@ class TradeExecutorService {
       this._processPendingSignals(capitalReturn.agentId);
     });
     
-    // 🆕 ESCUTA DECISÕES DO CONSELHO
+    // 🔥 NOVO: ESCUTA APRENDIZADO COMPARTILHADO DE OUTROS AGENTES (HFT, ARBITRAGE)
+    eventBus.on("learning:share", (learning) => {
+      this._applySharedLearning(learning);
+    });
+    
+    // 🔥 NOVO: ESCUTA DICAS DO CONSELHO
     eventBus.on("council:decision", async (decision) => {
       if (decision && decision.action !== "HOLD") {
         logger.info(`🏛️ Conselho decidiu: ${decision.action} (força: ${(decision.strength*100).toFixed(0)}%)`, { service: "TradeExecutor" });
+        
+        // Se o conselho recomenda algo com alta força, o Trend considera
+        if (decision.strength > 0.7 && decision.action === "BUY") {
+          logger.info(`📈 Trend seguindo recomendação do conselho para ${decision.symbol || "mercado"}`, { service: "TradeExecutor" });
+        }
       }
     });
     
     logger.info("TradeExecutorService initialized", { 
       service: "TradeExecutor",
       openTradesCount: this.openTrades.length,
-      version: "v5.1.0"
+      version: "v5.2.0"
     });
     
     // 🔥🔥🔥 FORÇA O START DO TRADE EXECUTOR 🔥🔥🔥
     logger.info("🔍 DEBUG: Chamando this.start() no construtor", { service: "TradeExecutor" });
     this.start();
+  }
+
+  // 🔥 NOVO: APLICA APRENDIZADO COMPARTILHADO DE OUTROS AGENTES
+  _applySharedLearning(learning) {
+    if (!learning || learning.agentId === "trend") return;
+    
+    logger.info(`🧠 Trend recebeu aprendizado de ${learning.agentId}: ${learning.content}`, { service: "TradeExecutor" });
+    
+    // Se outro agente está com alta performance, ajusta parâmetros internos
+    if (learning.type === "strategy_performance" && learning.confidence > 0.7) {
+      const winRate = learning.data?.winRate || 0;
+      
+      if (winRate > 70) {
+        logger.info(`✨ Trend aumentando confiança baseado no sucesso de ${learning.agentId} (${winRate}% win rate)`, { service: "TradeExecutor" });
+        
+        // Emite melhoria para o próprio Trend se ajustar
+        eventBus.emit("improvement:broadcast", {
+          sourceAgent: learning.agentId,
+          recommendation: "AUMENTAR_SENSIBILIDADE",
+          affectedAgents: ["trend"],
+          confidence: learning.confidence,
+          timestamp: Date.now()
+        });
+      } else if (winRate < 40) {
+        logger.info(`⚠️ Trend reduzindo risco baseado no desempenho ruim de ${learning.agentId}`, { service: "TradeExecutor" });
+        
+        eventBus.emit("improvement:broadcast", {
+          sourceAgent: learning.agentId,
+          recommendation: "REDUZIR_RISCO",
+          affectedAgents: ["trend"],
+          confidence: learning.confidence,
+          timestamp: Date.now()
+        });
+      }
+    }
+    
+    // Se recebeu daily settlement do HFT
+    if (learning.type === "daily_settlement" && learning.data?.amount > 0) {
+      logger.info(`💰 Trend registrou recebimento de $${learning.data.amount} do HFT`, { service: "TradeExecutor" });
+    }
   }
 
   async handleSignal(signal) {
@@ -201,17 +251,14 @@ class TradeExecutorService {
     let sizeMultiplier = 1.0;
     
     if (performance.consecutiveWins >= 3) {
-      // Sequência de lucros: aumenta confiança e tamanho
       sizeMultiplier = Math.min(1.5, 1 + (performance.consecutiveWins * 0.1));
       adjustedConfidence = Math.min(98, confidence + (performance.consecutiveWins * 2));
       logger.info(`📈 ${agent} em sequência de ${performance.consecutiveWins} lucros! Multiplicador: ${sizeMultiplier}x, Confiança ajustada: ${adjustedConfidence}%`, { service: "TradeExecutor" });
     } else if (performance.consecutiveLosses >= 2) {
-      // Sequência de prejuízos: reduz risco
       sizeMultiplier = Math.max(0.5, 1 - (performance.consecutiveLosses * 0.2));
       adjustedConfidence = Math.max(50, confidence - (performance.consecutiveLosses * 5));
       logger.info(`📉 ${agent} em sequência de ${performance.consecutiveLosses} prejuízos! Multiplicador: ${sizeMultiplier}x, Confiança ajustada: ${adjustedConfidence}%`, { service: "TradeExecutor" });
       
-      // Se perdeu 3+ seguidas, pausa o agente por um tempo
       if (performance.consecutiveLosses >= 3) {
         logger.warn(`⛔ ${agent} perdeu ${performance.consecutiveLosses} seguidas. Pulando este trade para evitar mais perdas.`, { service: "TradeExecutor" });
         return { success: false, reason: "CONSECUTIVE_LOSSES_BREAK" };
@@ -220,7 +267,6 @@ class TradeExecutorService {
     
     const positionInfo = risk.calculatePositionSize(symbol, ticker.price, cfg.stopLoss, agent, adjustedConfidence);
     
-    // Aplica multiplicador de tamanho baseado na performance
     if (positionInfo.qty && positionInfo.qty > 0) {
       positionInfo.qty = positionInfo.qty * sizeMultiplier;
     }
@@ -238,7 +284,6 @@ class TradeExecutorService {
     if (!capitalRequest.success) {
       logger.warn(`❌ Trade rejeitado pelo CapitalDistributor: ${capitalRequest.reason}`, { service: "TradeExecutor" });
       
-      // 🔥 VERIFICA SE FOI FALTA DE SALDO
       if (capitalRequest.reason === "INSUFFICIENT_BALANCE" || (capitalRequest.reason && capitalRequest.reason.includes("saldo"))) {
         return { success: false, reason: "INSUFFICIENT_BALANCE" };
       }
@@ -261,13 +306,10 @@ class TradeExecutorService {
     try {
       let stopLossPercent = cfg.stopLoss;
       
-      // 🆕 AJUSTA STOP LOSS BASEADO NA PERFORMANCE
       if (performance.consecutiveWins >= 2) {
-        // Mais confiante: stop mais apertado (protege lucro)
         stopLossPercent = cfg.stopLoss * 0.7;
         logger.info(`🎯 Stop loss reduzido para ${stopLossPercent}% (sequência de lucros)`, { service: "TradeExecutor" });
       } else if (performance.consecutiveLosses >= 2) {
-        // Menos confiante: stop mais largo (dá mais espaço)
         stopLossPercent = cfg.stopLoss * 1.3;
         logger.info(`🎯 Stop loss aumentado para ${stopLossPercent}% (sequência de prejuízos)`, { service: "TradeExecutor" });
       }
@@ -353,17 +395,14 @@ class TradeExecutorService {
     });
   }
 
-  // 🆕 PROCESSA SINAIS PENDENTES (chamado quando capital volta)
   _processPendingSignals(agentId) {
     const toProcess = this.pendingSignals.filter(s => s.agent === agentId);
     if (toProcess.length === 0) return;
     
     logger.info(`🔄 Processando ${toProcess.length} sinais pendentes para ${agentId}`, { service: "TradeExecutor" });
     
-    // Remove da fila os que vamos processar
     this.pendingSignals = this.pendingSignals.filter(s => s.agent !== agentId);
     
-    // Tenta executar cada um
     for (const signal of toProcess) {
       logger.info(`🔄 Tentando sinal pendente: ${signal.side} ${signal.symbol} para ${agentId}`, { service: "TradeExecutor" });
       this.executeTrade({
@@ -377,7 +416,6 @@ class TradeExecutorService {
         if (result.success) {
           logger.info(`✅ Sinal pendente executado com sucesso: ${signal.side} ${signal.symbol}`, { service: "TradeExecutor" });
         } else if (result.reason === "INSUFFICIENT_BALANCE") {
-          // Se ainda falta saldo, recoloca na fila
           this.pendingSignals.push(signal);
           logger.info(`📥 Sinal pendente recolocado na fila para ${agentId} (saldo ainda insuficiente)`, { service: "TradeExecutor" });
         } else {
@@ -387,10 +425,10 @@ class TradeExecutorService {
     }
   }
 
-  // 🆕 ATUALIZA PERFORMANCE DO AGENTE BASEADO NO RESULTADO DO TRADE
+  // 🔥 ATUALIZA PERFORMANCE E COMPARTILHA COM OUTROS AGENTES
   _updateAgentPerformance(agent, isWin, pnl) {
     if (!this.agentPerformance[agent]) {
-      this.agentPerformance[agent] = { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0 };
+      this.agentPerformance[agent] = { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0, winRate: 0 };
     }
     
     const perf = this.agentPerformance[agent];
@@ -402,9 +440,8 @@ class TradeExecutorService {
       perf.lastResult = "WIN";
       logger.info(`🏆 ${agent} - Vitória #${perf.consecutiveWins} consecutiva! Lucro: $${pnl.toFixed(2)}`, { service: "TradeExecutor" });
       
-      // Bônus de confiança para próximos trades
       if (perf.consecutiveWins >= 3) {
-        logger.info(`✨ ${agent} está EM FASE! ${perf.consecutiveWins} vitórias seguidas. Recomendado: aumentar tamanho das posições.`, { service: "TradeExecutor" });
+        logger.info(`✨ ${agent} está EM FASE! ${perf.consecutiveWins} vitórias seguidas.`, { service: "TradeExecutor" });
         eventBus.emit("agent:hotStreak", { agentId: agent, streak: perf.consecutiveWins });
       }
     } else {
@@ -414,19 +451,39 @@ class TradeExecutorService {
       perf.lastResult = "LOSS";
       logger.warn(`😞 ${agent} - Derrota #${perf.consecutiveLosses} consecutiva! Prejuízo: $${Math.abs(pnl).toFixed(2)}`, { service: "TradeExecutor" });
       
-      // Alerta de queda
       if (perf.consecutiveLosses >= 3) {
-        logger.error(`🚨 ${agent} em queda livre! ${perf.consecutiveLosses} derrotas seguidas. Recomendado: pausar ou reduzir risco.`, { service: "TradeExecutor" });
+        logger.error(`🚨 ${agent} em queda livre! ${perf.consecutiveLosses} derrotas seguidas.`, { service: "TradeExecutor" });
         eventBus.emit("agent:coldStreak", { agentId: agent, streak: perf.consecutiveLosses });
       }
     }
     
-    // Calcula win rate geral
     const totalTrades = perf.totalWins + perf.totalLosses;
     perf.winRate = totalTrades > 0 ? (perf.totalWins / totalTrades) * 100 : 0;
     
-    // Salva no banco para persistência
-    db.updateAgentPerformance(agent, perf);
+    // 🔥 COMPARTILHA APRENDIZADO COM OUTROS AGENTES (HFT, ARBITRAGE)
+    if (totalTrades > 0 && totalTrades % 10 === 0) {
+      const learningData = {
+        agentId: "trend",
+        type: "performance_update",
+        content: `Trend win rate ${perf.winRate.toFixed(0)}% após ${totalTrades} trades (${perf.consecutiveWins > 0 ? `${perf.consecutiveWins} wins seguidos` : `${perf.consecutiveLosses} losses seguidos`})`,
+        confidence: perf.winRate / 100,
+        data: {
+          winRate: perf.winRate,
+          totalTrades: totalTrades,
+          consecutiveWins: perf.consecutiveWins,
+          consecutiveLosses: perf.consecutiveLosses,
+          agent: agent
+        }
+      };
+      
+      eventBus.emit("learning:share", learningData);
+      logger.info(`📤 Trend compartilhou aprendizado: win rate ${perf.winRate.toFixed(0)}%`, { service: "TradeExecutor" });
+    }
+    
+    // Salva no banco
+    if (db.updateAgentPerformance) {
+      db.updateAgentPerformance(agent, perf);
+    }
     
     return perf;
   }
@@ -471,7 +528,6 @@ class TradeExecutorService {
           
           db.addTrade(trade);
           
-          // 🆕 ATUALIZA PERFORMANCE DO AGENTE
           const isWin = trade.result === "WIN";
           this._updateAgentPerformance(trade.agent, isWin, trade.pnl);
           
@@ -574,7 +630,7 @@ class TradeExecutorService {
         totalPnl: this.getTotalOpenPnl()
       },
       byAgent: this._getStatsByAgent(allClosedTrades),
-      agentPerformance: this.agentPerformance  // 🆕 EXPÕE PERFORMANCE POR AGENTE
+      agentPerformance: this.agentPerformance
     };
   }
   
@@ -602,7 +658,6 @@ class TradeExecutorService {
     return byAgent;
   }
   
-  // 🆕 MÉTODO PARA RESETAR PERFORMANCE DE UM AGENTE
   resetAgentPerformance(agent) {
     if (this.agentPerformance[agent]) {
       this.agentPerformance[agent] = {
@@ -618,7 +673,6 @@ class TradeExecutorService {
     return { success: true };
   }
   
-  // 🆕 MÉTODO PARA VER PERFORMANCE DE UM AGENTE
   getAgentPerformance(agent) {
     return this.agentPerformance[agent] || { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null };
   }
