@@ -74,6 +74,43 @@ class HFTService {
     // Escuta ticks de preço
     eventBus.on("tick", (prices) => this._onTick(prices));
     
+    // 🔥🔥🔥 NOVO: ESCUTA SINAIS DO SIGNAL SERVICE (igual o Trend)
+    eventBus.on("signal", async (signal) => {
+      // Verifica se está rodando
+      if (!this.running) return;
+      
+      // Verifica se o sinal está ativo
+      if (signal.status !== "ACTIVE") return;
+      
+      // Verifica se tem símbolo
+      if (!signal.symbol) return;
+      
+      // Verifica se tem capital
+      if (this.capitalAllocated <= 0) return;
+      
+      // Verifica cooldown do símbolo
+      const now = Date.now();
+      const lastTrade = this.lastTradeTime[signal.symbol];
+      if (lastTrade && (now - lastTrade) < HFT_CONFIG.COOLDOWN_SECONDS * 1000) return;
+      
+      // Verifica se já tem trade aberto para este símbolo
+      const hasOpenTrade = this.activeTrades.some(t => t.symbol === signal.symbol);
+      if (hasOpenTrade) return;
+      
+      // 🔥 HFT só opera com confiança mínima (pode ser menor que o Trend)
+      const minConfidence = 55;
+      if (signal.confidence < minConfidence) return;
+      
+      // Obtém ticker para o preço
+      const ticker = exchange.getTicker(signal.symbol);
+      if (!ticker) return;
+      
+      // Executa trade baseado no sinal (com tamanho reduzido para HFT)
+      logger.info(`📡 HFT recebeu sinal do SignalService: ${signal.type} ${signal.symbol} (conf: ${signal.confidence}%)`, { service: "HFT" });
+      
+      await this._executeTrade(signal.type, signal.symbol, ticker.price, signal.confidence);
+    });
+    
     // 🔥 ESCUTA ALOCAÇÃO DE CAPITAL - INICIA AUTOMATICAMENTE
     eventBus.on(`capital:${this.agentId}:allocated`, (data) => {
       this.capitalAllocated = data.amount;
@@ -192,7 +229,6 @@ class HFTService {
         }
       };
       
-      // 🔥 ENVIA PARA O LEARNING BRAIN (evento específico)
       eventBus.emit(`learning:${this.agentId}`, learningData);
       logger.info(`📤 HFT compartilhou aprendizado: win rate ${winRate.toFixed(0)}%`, { service: "HFT" });
     }
@@ -233,7 +269,6 @@ class HFTService {
       timestamp: Date.now()
     });
     
-    // 🔥 ENVIA TAMBÉM PARA O LEARNING BRAIN
     eventBus.emit(`learning:${this.agentId}`, {
       type: "daily_settlement",
       content: `HFT enviou $${amount} de lucro diário para o Trend`,
@@ -417,6 +452,7 @@ class HFTService {
     const totalEquity = this.capitalAllocated;
     if (totalEquity <= 0) return 0;
     
+    // 🔥 HFT usa posições MENORES que o Trend (MAX_POSITION_SIZE = 2%)
     let qty = (totalEquity * HFT_CONFIG.MAX_POSITION_SIZE * this.tempRiskMultiplier) / price;
     const confidenceMultiplier = 0.5 + (confidence / 100);
     qty = qty * confidenceMultiplier;
@@ -459,13 +495,14 @@ class HFTService {
         return null;
       }
       
-      const order = await exchange.placeOrder(symbol, signal, qty, price);
+      const order = await exchange.placeOrder(symbol, signal, qty, price, this.agentId);
       
       const trade = {
         id: `hft_${Date.now()}_${Math.random().toString(36).slice(2)}`,
         symbol, side: signal, entryPrice: order.price, qty, estimatedCost,
         stopLoss: stopPrice, takeProfit: takeProfitPrice, confidence,
-        strategy: "HFT_CONSENSUS", status: "OPEN",
+        strategy: "HFT_" + (signal === "BUY" ? "SIGNAL_BUY" : "SIGNAL_SELL"),
+        status: "OPEN",
         openedAt: new Date().toISOString(), closedAt: null, pnl: 0, pnlPct: 0
       };
       
@@ -476,7 +513,7 @@ class HFTService {
       
       db.addTrade({
         id: trade.id, symbol, side: signal, status: "OPEN",
-        entryPrice: order.price, qty, strategy: "HFT_CONSENSUS",
+        entryPrice: order.price, qty, strategy: trade.strategy,
         timestamp: trade.openedAt
       });
       
@@ -538,7 +575,6 @@ class HFTService {
           });
         }
         
-        // Devolve capital (saldo + lucro/perda)
         if (trade.estimatedCost) {
           const returnedAmount = trade.estimatedCost + (trade.pnl || 0);
           if (returnedAmount !== 0) {
