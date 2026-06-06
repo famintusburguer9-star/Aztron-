@@ -8,60 +8,50 @@ class RiskManagementService {
     this.paused = false;
     this.pausedSymbols = new Set();
     
-    // 🆕 CONFIGURAÇÕES POR AGENTE
+    // 🔥 CONFIGURAÇÕES POR AGENTE - AJUSTADAS PARA MAIS AGRESSIVIDADE
     this.agentConfigs = {
-      trend: { maxCapitalUsage: 0.70, maxPositionPct: 0.20, minConfidence: 60 },
-      hft: { maxCapitalUsage: 0.50, maxPositionPct: 0.10, minConfidence: 65 },
-      arbitrage: { maxCapitalUsage: 0.60, maxPositionPct: 0.15, minConfidence: 70 },
-      sentiment: { maxCapitalUsage: 0.30, maxPositionPct: 0.05, minConfidence: 55 },
-      deep: { maxCapitalUsage: 0.40, maxPositionPct: 0.10, minConfidence: 60 }
+      trend: { maxCapitalUsage: 0.80, maxPositionPct: 0.30, minConfidence: 50 },   // Aumentado: 70%→80%, 20%→30%
+      hft: { maxCapitalUsage: 0.60, maxPositionPct: 0.15, minConfidence: 55 },     // Aumentado
+      arbitrage: { maxCapitalUsage: 0.70, maxPositionPct: 0.20, minConfidence: 60 }, // Aumentado
+      sentiment: { maxCapitalUsage: 0.40, maxPositionPct: 0.10, minConfidence: 50 },
+      deep: { maxCapitalUsage: 0.50, maxPositionPct: 0.15, minConfidence: 55 }
     };
     
     logger.info("RiskManagementService initialized (integrado com CapitalDistributor)", { service: "RiskManagement" });
   }
 
-  // 🆕 OBTÉM CAPITAL DO AGENTE (do CapitalDistributor)
   getAgentCapital(agentId) {
     const agentInfo = capitalDistributor.getAgentInfo(agentId);
     return agentInfo ? agentInfo.balance : 0;
   }
 
-  // 🆕 OBTÉM INVESTIMENTO ATUAL DO AGENTE (baseado em posições abertas)
   getAgentInvested(agentId) {
-    // Aqui você precisaria rastrear quais posições pertencem a cada agente
-    // Por enquanto, vamos usar uma abordagem simplificada
     const openTrades = this._getOpenTradesForAgent(agentId);
     let totalInvested = 0;
-    
     for (const trade of openTrades) {
-      totalInvested += trade.entryPrice * trade.qty;
+      totalInvested += (trade.entryPrice * trade.qty);
     }
-    
     return totalInvested;
   }
 
-  // 🆕 OBTÉM TRADES ABERTOS POR AGENTE
   _getOpenTradesForAgent(agentId) {
-    // Pega do DatabaseService ou do TradeExecutor
     const db = require("./DatabaseService");
     const allOpenTrades = db.getTrades({ status: "OPEN" });
     return allOpenTrades.filter(t => t.agent === agentId);
   }
 
-  // 🆕 VALIDA TRADE PARA UM AGENTE ESPECÍFICO
   validateTrade(symbol, side, notionalValue, agentId = "trend") {
     const cfg = db.getConfig();
     const agentCapital = this.getAgentCapital(agentId);
     const agentConfig = this.agentConfigs[agentId] || this.agentConfigs.trend;
     const agentInvested = this.getAgentInvested(agentId);
     
-    // 🆕 LIMITE DO CAPITAL DO AGENTE
     const maxCapitalUsage = agentConfig.maxCapitalUsage;
     const maxPositionValue = agentCapital * maxCapitalUsage;
     const availableForNew = maxPositionValue - agentInvested;
     
-    // 🆕 RISK PER TRADE baseado no capital do agente
-    const riskPerTrade = Math.min(cfg.riskPerTrade, 2.0);
+    // 🔥 AUMENTADO: riskPerTrade máximo 3% (antes 2%)
+    const riskPerTrade = Math.min(cfg.riskPerTrade, 3.0);
     const riskDollar = agentCapital * (riskPerTrade / 100);
     
     const errors = [];
@@ -69,19 +59,17 @@ class RiskManagementService {
     if (this.paused) errors.push("Engine is paused");
     if (this.pausedSymbols.has(symbol)) errors.push(`${symbol} is paused (Flash Crash Shield)`);
     
-    // Verifica se já atingiu o limite de capital do agente
     if (notionalValue > availableForNew && availableForNew > 0) {
       errors.push(`Capital limit for ${agentId}. Max new position: $${availableForNew.toFixed(2)}`);
     }
     
-    // Verifica tamanho da posição (máximo 10x o risco)
-    if (notionalValue > riskDollar * 10) {
-      errors.push(`Position size too large for ${agentId}. Max: $${(riskDollar * 10).toFixed(2)}`);
+    // 🔥 AUMENTADO: posição pode ser até 20x o risco (antes 10x)
+    if (notionalValue > riskDollar * 20) {
+      errors.push(`Position size too large for ${agentId}. Max: $${(riskDollar * 20).toFixed(2)}`);
     }
     
-    // Verifica saldo (apenas para referência)
     const bal = exchange.getBalance();
-    if (bal.USDT < notionalValue * 0.1) {
+    if (bal.USDT < notionalValue * 0.05) {
       errors.push("Insufficient USDT balance in exchange");
     }
 
@@ -96,7 +84,6 @@ class RiskManagementService {
     };
   }
 
-  // 🆕 CALCULA TAMANHO DA POSIÇÃO PARA UM AGENTE ESPECÍFICO
   calculatePositionSize(symbol, price, stopLossPercent, agentId = "trend", confidence = 70) {
     const cfg = db.getConfig();
     const bal = exchange.getBalance();
@@ -104,29 +91,26 @@ class RiskManagementService {
     const agentConfig = this.agentConfigs[agentId] || this.agentConfigs.trend;
     const agentInvested = this.getAgentInvested(agentId);
     
-    // 🆕 LIMITE DO CAPITAL DO AGENTE (máximo 70%)
     const maxCapitalUsage = agentConfig.maxCapitalUsage;
     const maxNewPositionValue = Math.max(0, (agentCapital * maxCapitalUsage) - agentInvested);
     
-    // 🆕 RISK PER TRADE: máximo 2% do capital do agente
-    const riskPerTrade = Math.min(cfg.riskPerTrade, 2.0);
+    // 🔥 AUMENTADO: riskPerTrade máximo 3% (antes 2%)
+    const riskPerTrade = Math.min(cfg.riskPerTrade, 3.0);
     const riskDollar = agentCapital * (riskPerTrade / 100);
     const stopLossDollar = price * (stopLossPercent / 100);
     
     let qty = riskDollar / stopLossDollar;
     
-    // 🆕 AJUSTA POR CONFIANÇA (mais confiança = posição maior)
-    const confidenceMultiplier = 0.5 + (confidence / 100); // 0.5 a 1.5
+    const confidenceMultiplier = 0.6 + (confidence / 100); // 0.6 a 1.6 (antes 0.5 a 1.5)
     qty = qty * confidenceMultiplier;
     
-    // Limita pelo capital disponível do agente
     const maxQtyByCapital = maxNewPositionValue / price;
     if (qty > maxQtyByCapital && maxQtyByCapital > 0) {
-      qty = maxQtyByCapital * 0.9;
+      qty = maxQtyByCapital * 0.95;
       logger.warn(`[RiskManagement] ${agentId}: Qty limitada pelo capital disponível: ${qty.toFixed(6)} ${symbol}`);
     }
     
-    // 🆕 LIMITE MÁXIMO POR POSIÇÃO (% do capital do agente)
+    // 🔥 AUMENTADO: maxPositionPct agora é o limite principal (30% para trend)
     const maxPositionPct = agentConfig.maxPositionPct;
     const maxQtyByPct = (agentCapital * maxPositionPct) / price;
     if (qty > maxQtyByPct) {
@@ -134,17 +118,17 @@ class RiskManagementService {
       logger.warn(`[RiskManagement] ${agentId}: Qty limitada a ${maxPositionPct * 100}% do capital (${qty.toFixed(6)} ${symbol})`);
     }
     
-    // 🔥 LIMITE DO MODO PAPER: máximo 10% do saldo USDT (global)
+    // 🔥 AUMENTADO: PAPER MODE agora permite 25% do saldo (antes 10%)
     const isPaperMode = cfg.mode === "PAPER";
     if (isPaperMode) {
-      const maxQtyPaper = (bal.USDT * 0.10) / price;
+      const maxQtyPaper = (bal.USDT * 0.25) / price;
       if (qty > maxQtyPaper) {
         qty = maxQtyPaper;
-        logger.warn(`[RiskManagement] PAPER MODE: Qty limitada a 10% do saldo (${qty.toFixed(6)} ${symbol})`);
+        logger.warn(`[RiskManagement] PAPER MODE: Qty limitada a 25% do saldo (${qty.toFixed(6)} ${symbol})`);
       }
     }
     
-    // 🔥 QUANTIDADE MÍNIMA POR SÍMBOLO
+    // Quantidades mínimas
     let minQty = 0;
     if (symbol.includes("BTC")) minQty = 0.0001;
     else if (symbol.includes("ETH")) minQty = 0.001;
@@ -156,11 +140,11 @@ class RiskManagementService {
       logger.warn(`[RiskManagement] Qty ajustada para mínimo (${minQty}) ${symbol}`);
     }
     
-    // 🔥 LIMITE MÁXIMO ABSOLUTO: nunca mais que 20% do capital do agente
-    const absoluteMax = (agentCapital * 0.20) / price;
+    // 🔥 AUMENTADO: limite máximo absoluto de 40% do capital do agente (antes 20%)
+    const absoluteMax = (agentCapital * 0.40) / price;
     if (qty > absoluteMax) {
       qty = absoluteMax;
-      logger.warn(`[RiskManagement] ${agentId}: Qty limitada a 20% do capital (${qty.toFixed(6)} ${symbol})`);
+      logger.warn(`[RiskManagement] ${agentId}: Qty limitada a 40% do capital (${qty.toFixed(6)} ${symbol})`);
     }
     
     return { 
@@ -175,7 +159,6 @@ class RiskManagementService {
     };
   }
 
-  // 🆕 VERIFICA SE PODE ABRIR NOVA POSIÇÃO PARA UM AGENTE
   canOpenNewPosition(symbol, notionalValue, agentId = "trend") {
     const agentCapital = this.getAgentCapital(agentId);
     const agentConfig = this.agentConfigs[agentId] || this.agentConfigs.trend;
@@ -211,12 +194,10 @@ class RiskManagementService {
     };
   }
 
-  // 🆕 OBTÉM CONFIGURAÇÃO DO AGENTE
   getAgentConfig(agentId) {
     return this.agentConfigs[agentId] || this.agentConfigs.trend;
   }
 
-  // 🆕 ATUALIZA CONFIGURAÇÃO DO AGENTE
   updateAgentConfig(agentId, config) {
     if (this.agentConfigs[agentId]) {
       this.agentConfigs[agentId] = { ...this.agentConfigs[agentId], ...config };
@@ -253,12 +234,10 @@ class RiskManagementService {
     return [...this.pausedSymbols]; 
   }
   
-  // 🆕 OBTÉM ESTATÍSTICAS COMPLETAS (incluindo agentes)
   getStats() {
     const cfg = db.getConfig();
     const totalEquity = exchange.getBalance().USDT || 0;
     
-    // 🆕 ESTATÍSTICAS POR AGENTE
     const agentsStats = {};
     for (const agentId of Object.keys(this.agentConfigs)) {
       const capital = this.getAgentCapital(agentId);
@@ -284,7 +263,6 @@ class RiskManagementService {
     };
   }
 
-  // 🆕 MÉTODO LEGADO PARA COMPATIBILIDADE (usa agente padrão "trend")
   getTotalInvested() {
     return this.getAgentInvested("trend");
   }
