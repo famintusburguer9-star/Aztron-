@@ -35,6 +35,7 @@ class DeepPatternRecognitionService {
     // Estado do serviço
     this._scanInterval = null;
     this.isRunning = false;
+    this.initialized = false;
     
     // 🆕 CONFIGURAÇÕES
     this.config = {
@@ -44,6 +45,15 @@ class DeepPatternRecognitionService {
       maxPatternsToKeep: 100,
       shareInsights: true
     };
+    
+    // 🆕 AJUSTES TEMPORÁRIOS DO LEARNING BRAIN
+    this.tempConfidenceMultiplier = 1.0;
+    this.tempScanMultiplier = 1.0;
+    
+    // 🆕 ESCUTA ALOCAÇÃO DE CAPITAL (deep não usa capital diretamente)
+    EventBus.on(`capital:${this.agentId}:allocated`, (data) => {
+      logger.info(`💰 DeepPattern registrou alocação: $${data.amount} (não usa capital diretamente)`, { service: "DeepPattern" });
+    });
     
     // 🆕 ESCUTA MELHORIAS DO LEARNING BRAIN
     EventBus.on(`improvement:${this.agentId}`, (improvement) => {
@@ -63,42 +73,99 @@ class DeepPatternRecognitionService {
     });
   }
 
+  // 🔥 INICIALIZAÇÃO
+  async initialize() {
+    if (this.initialized) return { success: true, isRunning: this.isRunning };
+    
+    logger.info("🔍 DeepPattern: Inicializando...", { service: "DeepPattern" });
+    
+    // Compartilha insight inicial
+    this.sharePattern({
+      type: "initialization",
+      content: `DeepPattern Recognition Service iniciado - monitorando ${TIMEFRAMES.length} timeframes`,
+      confidence: 0.9,
+      priority: "normal"
+    });
+    
+    this.initialized = true;
+    
+    logger.info(`✅ DeepPatternService initialized - monitorando ${TIMEFRAMES.length} timeframes`, { service: "DeepPattern" });
+    
+    return { success: true, isRunning: this.isRunning };
+  }
+
   // 🆕 APLICA MELHORIAS RECEBIDAS DO LEARNING BRAIN
   applyImprovement(improvement) {
+    if (!improvement) return;
+    
     logger.info(`🧠 DeepPattern recebeu melhoria: ${improvement.recommendation}`, { service: "DeepPattern" });
     
     switch(improvement.recommendation) {
-      case "REVISAR_TODAS_POSICOES_E_CONSIDERAR_CONTRA_TREND":
+      case "AUMENTAR_SENSIBILIDADE":
+        this.tempConfidenceMultiplier = Math.max(0.7, this.tempConfidenceMultiplier * 0.9);
+        this.tempScanMultiplier = Math.max(0.5, this.tempScanMultiplier * 0.8);
         this.config.minConfidence = Math.max(50, this.config.minConfidence - 5);
-        logger.info(`📊 Ajustando confiança mínima para ${this.config.minConfidence}%`, { service: "DeepPattern" });
+        
+        // Ajusta o intervalo de scan
+        if (this._scanInterval && this.isRunning) {
+          clearInterval(this._scanInterval);
+          const newInterval = Math.max(15000, this.config.scanIntervalMs * this.tempScanMultiplier);
+          this._scanInterval = setInterval(() => this._scan(), newInterval);
+          logger.info(`⚡ DeepPattern aumentou sensibilidade: minConfiança=${this.config.minConfidence}%, scan=${newInterval}ms`, { service: "DeepPattern" });
+        }
+        break;
+        
+      case "REDUZIR_RISCO":
+        this.tempConfidenceMultiplier = Math.min(1.3, this.tempConfidenceMultiplier * 1.1);
+        this.config.minConfidence = Math.min(80, this.config.minConfidence + 5);
+        logger.info(`📉 DeepPattern reduziu risco: minConfiança=${this.config.minConfidence}%`, { service: "DeepPattern" });
+        break;
+        
+      case "REVISAR_TODAS_POSICOES_E_CONSIDERAR_CONTRA_TREND":
+        this.config.minConfidence = Math.max(55, this.config.minConfidence - 3);
+        logger.info(`📊 DeepPattern ajustando confiança mínima para ${this.config.minConfidence}%`, { service: "DeepPattern" });
         break;
         
       default:
         logger.debug(`Melhoria recebida: ${improvement.recommendation}`, { service: "DeepPattern" });
     }
+    
+    // Reseta ajustes temporários após 1 hora
+    setTimeout(() => {
+      this.tempConfidenceMultiplier = 1.0;
+      this.tempScanMultiplier = 1.0;
+      this.config.minConfidence = 60;
+      logger.info(`🔄 DeepPattern resetou ajustes temporários`, { service: "DeepPattern" });
+    }, 3600000);
   }
 
   // 🆕 COMPARTILHA PADRÃO DETECTADO COM O LEARNING BRAIN
   sharePattern(pattern) {
     if (!this.config.shareInsights) return;
     
-    const insight = {
-      type: "pattern_detected",
-      content: `${pattern.pattern} detectado em ${pattern.symbol} (${pattern.timeframe}) com ${pattern.confidence}% confiança - implicação ${pattern.implication}`,
-      confidence: pattern.confidence / 100,
-      priority: pattern.confidence > 75 ? "high" : "normal",
-      data: {
-        pattern: pattern.pattern,
-        symbol: pattern.symbol,
-        timeframe: pattern.timeframe,
-        implication: pattern.implication,
-        price: pattern.price,
-        confidence: pattern.confidence
-      }
-    };
-    
-    EventBus.emit(`learning:${this.agentId}`, insight);
-    logger.info(`📤 DeepPattern compartilhou: ${insight.content.substring(0, 80)}`, { service: "DeepPattern" });
+    // Se for um padrão real (não inicialização)
+    if (pattern.pattern) {
+      const adjustedConfidence = Math.min(0.95, (pattern.confidence / 100) * this.tempConfidenceMultiplier);
+      
+      const insight = {
+        type: "pattern_detected",
+        content: `${pattern.pattern} detectado em ${pattern.symbol} (${pattern.timeframe}) com ${pattern.confidence}% confiança - implicação ${pattern.implication}`,
+        confidence: adjustedConfidence,
+        priority: pattern.confidence > 75 ? "high" : "normal",
+        data: {
+          pattern: pattern.pattern,
+          symbol: pattern.symbol,
+          timeframe: pattern.timeframe,
+          implication: pattern.implication,
+          price: pattern.price,
+          confidence: pattern.confidence,
+          reasoning: pattern.reasoning
+        }
+      };
+      
+      EventBus.emit(`learning:${this.agentId}`, insight);
+      logger.info(`📤 DeepPattern compartilhou: ${insight.content.substring(0, 80)}`, { service: "DeepPattern" });
+    }
   }
 
   // 🆕 EMITE EVENTO DE PADRÃO PARA OUTROS SERVIÇOS
@@ -122,13 +189,20 @@ class DeepPatternRecognitionService {
   start() {
     if (this.isRunning) return { success: false, reason: "Already running" };
     
+    // Se não inicializou, inicializa primeiro
+    if (!this.initialized) {
+      this.initialize();
+    }
+    
     this.isRunning = true;
-    this._scanInterval = setInterval(() => this._scan(), this.config.scanIntervalMs);
+    const effectiveInterval = Math.max(15000, this.config.scanIntervalMs * this.tempScanMultiplier);
+    this._scanInterval = setInterval(() => this._scan(), effectiveInterval);
     
     logger.info("DeepPatternRecognitionService started - analisando múltiplos timeframes", { 
       service: "DeepPattern",
-      scanInterval: `${this.config.scanIntervalMs / 1000}s`,
-      timeframes: TIMEFRAMES.join(", ")
+      scanInterval: `${effectiveInterval / 1000}s`,
+      timeframes: TIMEFRAMES.join(", "),
+      minConfidence: `${this.config.minConfidence}%`
     });
     
     return { success: true };
@@ -141,9 +215,10 @@ class DeepPatternRecognitionService {
     }
     this.isRunning = false;
     logger.info("DeepPatternRecognitionService stopped", { service: "DeepPattern" });
+    return { success: true };
   }
 
-  // 🆕 SCAN PRINCIPAL - ANALISA MÚLTIPLOS SÍMBOLOS E TIMEFRAMES
+  // SCAN PRINCIPAL - ANALISA MÚLTIPLOS SÍMBOLOS E TIMEFRAMES
   async _scan() {
     if (!this.isRunning) return;
     
@@ -182,7 +257,7 @@ class DeepPatternRecognitionService {
         // Atualiza estatísticas de performance
         this._updatePerformanceStats(detection);
         
-        // 🆕 EMITE EVENTO E COMPARTILHA
+        // EMITE EVENTO E COMPARTILHA
         this.emitPatternEvent(detection);
         this.sharePattern(detection);
         
@@ -199,19 +274,17 @@ class DeepPatternRecognitionService {
       }
     }
     
-    // 🆕 COMPARTILHA RELATÓRIO RESUMIDO A CADA 10 SCANS
+    // COMPARTILHA RELATÓRIO RESUMIDO A CADA 10 SCANS
     if (this.detectedPatterns.length % 10 === 0 && this.detectedPatterns.length > 0) {
       this._shareSummaryReport();
     }
   }
 
-  // 🆕 ANÁLISE REAL DE PADRÕES (substitui o random)
+  // ANÁLISE REAL DE PADRÕES
   async _analyzeSymbol(symbol, timeframe) {
-    // Obtém indicadores do MarketDataService
     const indicators = marketData.getIndicators(symbol);
     if (!indicators) return null;
     
-    // Extrai dados relevantes
     const price = indicators.price || 0;
     const rsi = indicators.rsi || 50;
     const macd = indicators.macd || { histogram: 0 };
@@ -219,10 +292,9 @@ class DeepPatternRecognitionService {
     const high24h = indicators.high24h || price * 1.02;
     const low24h = indicators.low24h || price * 0.98;
     
-    // 🆕 DETECÇÃO BASEADA EM DADOS REAIS
     const detections = [];
     
-    // 1. Detecção de Double Top/Bottom (baseado em RSI e preço)
+    // 1. Detecção de Double Top/Bottom
     if (rsi > 70 && price > high24h * 0.98) {
       detections.push({
         pattern: "Double Top",
@@ -241,7 +313,7 @@ class DeepPatternRecognitionService {
       });
     }
     
-    // 2. Detecção de Divergência (MACD)
+    // 2. Detecção de Divergência
     if (macd.histogram > 0 && price < low24h * 1.01) {
       detections.push({
         pattern: "Bullish Divergence",
@@ -260,7 +332,7 @@ class DeepPatternRecognitionService {
       });
     }
     
-    // 3. Detecção de Triangles (baseado em volatilidade)
+    // 3. Detecção de Triangles
     const volatility = indicators.volatility || 1;
     if (volatility < 0.5 && volume > 0) {
       detections.push({
@@ -271,7 +343,7 @@ class DeepPatternRecognitionService {
       });
     }
     
-    // 4. Detecção de Flags (baseado em movimento recente)
+    // 4. Detecção de Flags
     const priceChange24h = indicators.change24h || 0;
     if (Math.abs(priceChange24h) > 3 && volatility < 1) {
       const pattern = priceChange24h > 0 ? "Bull Flag" : "Bear Flag";
@@ -283,8 +355,7 @@ class DeepPatternRecognitionService {
       });
     }
     
-    // 5. Detecção de Head & Shoulders (simplificada)
-    // Baseado em padrão de três picos
+    // 5. Detecção de Head & Shoulders
     if (this._detectHeadAndShoulders(indicators)) {
       detections.push({
         pattern: "Head & Shoulders",
@@ -303,10 +374,8 @@ class DeepPatternRecognitionService {
       });
     }
     
-    // Se não detectou nada baseado em dados, retorna null
     if (detections.length === 0) return null;
     
-    // Pega o padrão com maior confiança
     const best = detections.reduce((a, b) => a.confidence > b.confidence ? a : b);
     
     return {
@@ -314,7 +383,7 @@ class DeepPatternRecognitionService {
       symbol: symbol,
       pattern: best.pattern,
       price: price,
-      confidence: Math.round(best.confidence),
+      confidence: Math.round(best.confidence * this.tempConfidenceMultiplier),
       timeframe: timeframe,
       implication: best.implication,
       reasoning: best.reasoning,
@@ -328,29 +397,22 @@ class DeepPatternRecognitionService {
     };
   }
 
-  // 🆕 DETECTA HEAD & SHOULDERS
   _detectHeadAndShoulders(indicators) {
-    // Implementação simplificada - em produção seria mais robusta
     const priceChange = indicators.change24h || 0;
     const rsi = indicators.rsi || 50;
-    // Head & Shoulders tipicamente aparece após topo com RSI alto
     return priceChange < -1 && rsi > 60 && rsi < 75;
   }
 
-  // 🆕 DETECTA INVERSE HEAD & SHOULDERS
   _detectInverseHeadAndShoulders(indicators) {
     const priceChange = indicators.change24h || 0;
     const rsi = indicators.rsi || 50;
-    // Inverse H&S tipicamente aparece após fundo com RSI baixo
     return priceChange > 1 && rsi > 30 && rsi < 45;
   }
 
-  // 🆕 TENTA CONFIRMAR PADRÃO
   _attemptConfirmation(pattern) {
-    // Agenda uma verificação após o timeframe
     const confirmTimeout = pattern.timeframe === "15m" ? 15 : 
                            pattern.timeframe === "1h" ? 60 : 
-                           pattern.timeframe === "4h" ? 240 : 1440; // minutos
+                           pattern.timeframe === "4h" ? 240 : 1440;
     
     setTimeout(async () => {
       const currentPrice = marketData.getIndicators(pattern.symbol)?.price || 0;
@@ -374,7 +436,6 @@ class DeepPatternRecognitionService {
       if (confirmed) {
         logger.info(`✅ Padrão confirmado: ${pattern.pattern} em ${pattern.symbol} - movimento de ${priceChange.toFixed(1)}%`, { service: "DeepPattern" });
         
-        // Compartilha confirmação
         EventBus.emit(`learning:${this.agentId}`, {
           type: "pattern_confirmed",
           content: `Padrão ${pattern.pattern} confirmado em ${pattern.symbol} com movimento de ${priceChange.toFixed(1)}%`,
@@ -386,7 +447,6 @@ class DeepPatternRecognitionService {
     }, confirmTimeout * 60 * 1000);
   }
 
-  // 🆕 ATUALIZA ESTATÍSTICAS DE PERFORMANCE DOS PADRÕES
   _updatePerformanceStats(pattern) {
     const key = pattern.pattern;
     if (!this.performanceStats[key]) {
@@ -407,7 +467,6 @@ class DeepPatternRecognitionService {
     stats.lastDetected = pattern.timestamp;
   }
 
-  // 🆕 COMPARTILHA RELATÓRIO RESUMIDO
   _shareSummaryReport() {
     const lastHour = Date.now() - 3600000;
     const recentPatterns = this.detectedPatterns.filter(p => 
@@ -438,7 +497,6 @@ class DeepPatternRecognitionService {
     logger.info(`📊 Relatório resumido compartilhado: ${report.content}`, { service: "DeepPattern" });
   }
 
-  // 🆕 OBTÉM PADRÕES DETECTADOS
   getPatterns(limit = 10, filter = null) {
     let patterns = this.detectedPatterns;
     
@@ -453,7 +511,6 @@ class DeepPatternRecognitionService {
     return patterns.slice(0, limit);
   }
 
-  // 🆕 OBTÉM ESTATÍSTICAS DE PERFORMANCE
   getPerformanceStats() {
     const stats = {};
     for (const [pattern, data] of Object.entries(this.performanceStats)) {
@@ -468,10 +525,10 @@ class DeepPatternRecognitionService {
     return stats;
   }
 
-  // 🆕 OBTÉM STATUS COMPLETO
   getStatus() {
     return {
       running: this.isRunning,
+      initialized: this.initialized,
       totalPatternsDetected: this.detectedPatterns.length,
       confirmedPatterns: this.confirmedPatterns.length,
       patternsByType: {
@@ -479,16 +536,23 @@ class DeepPatternRecognitionService {
         BEARISH: this.detectedPatterns.filter(p => p.implication === "BEARISH").length,
         NEUTRAL: this.detectedPatterns.filter(p => p.implication === "NEUTRAL").length
       },
-      config: this.config,
+      config: {
+        minConfidence: this.config.minConfidence,
+        requireConfirmation: this.config.requireConfirmation,
+        scanIntervalMs: this.config.scanIntervalMs
+      },
+      tempMultipliers: {
+        confidence: this.tempConfidenceMultiplier,
+        scan: this.tempScanMultiplier
+      },
       performanceStats: this.getPerformanceStats(),
       lastScan: this.detectedPatterns[0]?.timestamp || null
     };
   }
 
-  // 🆕 MÉTODO PARA MIGRAR PARA LIVE (quando estiver pronto)
   async switchToLiveMode() {
     logger.info("🔄 DeepPattern migrando para LIVE MODE...", { service: "DeepPattern" });
-    this.config.minConfidence = 70; // Aumenta confiança mínima em LIVE
+    this.config.minConfidence = 70;
     logger.info("✅ DeepPattern agora opera em LIVE MODE com confiança mínima de 70%", { service: "DeepPattern" });
     return { success: true };
   }
