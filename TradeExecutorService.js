@@ -8,7 +8,7 @@ const tokenomics = require("./TokenomicsService");
 
 // 🆕 INTEGRAÇÃO COM NOVOS SERVIÇOS
 const capitalDistributor = require("./CapitalDistributorService");
-const learningBrain = require("./LearningBrainService");
+// const learningBrain = require("./LearningBrainService"); // 🔥 COMENTADO
 
 class TradeExecutorService {
   constructor() {
@@ -75,12 +75,6 @@ class TradeExecutorService {
       return;
     }
     
-    // 🔥🔥🔥 BLOQUEIO DE FIM DE SEMANA REMOVIDO 🔥🔥🔥
-    // if (this._isWeekend() && signal.agent !== "hft") {
-    //   logger.debug(`Ignorando sinal de ${signal.agent} no fim de semana`);
-    //   return;
-    // }
-    
     logger.info(`📡 Signal received: ${signal.type} ${signal.symbol} (conf: ${signal.confidence}%) from ${signal.strategy || signal.agent}`, { 
       service: "TradeExecutor",
       agent: signal.agent || this._getAgentFromStrategy(signal.strategy)
@@ -88,34 +82,36 @@ class TradeExecutorService {
     
     const agent = signal.agent || this._getAgentFromStrategy(signal.strategy);
     
-    let prediction = null;
-    if (learningBrain && learningBrain.predictSignal) {
-      prediction = learningBrain.predictSignal({
-        symbol: signal.symbol,
-        type: signal.type,
-        confidence: signal.confidence,
-        strategy: signal.strategy,
-        agent: agent
-      });
-      
-      if (prediction && prediction.recommendation === "SKIP") {
-        logger.info(`⏭️ LearningBrain recomendou pular: ${prediction.patternUsed || "no pattern"}`, { service: "TradeExecutor" });
-        return;
-      }
-      
-      if (prediction && prediction.recommendation === "WAIT") {
-        logger.info(`⏸️ LearningBrain recomendou aguardar`, { service: "TradeExecutor" });
-        return;
-      }
-    }
+    // 🔥🔥🔥 BLOQUEIO DO LEARNING BRAIN REMOVIDO 🔥🔥🔥
+    // let prediction = null;
+    // if (learningBrain && learningBrain.predictSignal) {
+    //   prediction = learningBrain.predictSignal({
+    //     symbol: signal.symbol,
+    //     type: signal.type,
+    //     confidence: signal.confidence,
+    //     strategy: signal.strategy,
+    //     agent: agent
+    //   });
+    //   
+    //   if (prediction && prediction.recommendation === "SKIP") {
+    //     logger.info(`⏭️ LearningBrain recomendou pular: ${prediction.patternUsed || "no pattern"}`, { service: "TradeExecutor" });
+    //     return;
+    //   }
+    //   
+    //   if (prediction && prediction.recommendation === "WAIT") {
+    //     logger.info(`⏸️ LearningBrain recomendou aguardar`, { service: "TradeExecutor" });
+    //     return;
+    //   }
+    // }
     
+    // 🔥 PREDICTION SEMPRE NULL - NÃO BLOQUEIA
     const result = await this.executeTrade({
       symbol: signal.symbol,
       side: signal.type,
       strategy: signal.strategy,
       confidence: signal.confidence,
       agent: agent,
-      prediction: prediction
+      prediction: null
     });
     
     if (result.success) {
