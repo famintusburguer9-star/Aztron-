@@ -1,734 +1,622 @@
-const exchange = require("./ExchangeAdapterService");
-const risk = require("./RiskManagementService");
-const slippage = require("./SlippageEstimatorService");
-const db = require("./DatabaseService");
-const eventBus = require("./EventBus");
+const EventBus = require("./EventBus");
 const logger = require("./LoggerService");
-const tokenomics = require("./TokenomicsService");
+const db = require("./DatabaseService");
 
-// 🆕 INTEGRAÇÃO COM NOVOS SERVIÇOS
-const capitalDistributor = require("./CapitalDistributorService");
-const learningBrain = require("./LearningBrainService"); // 🔥 ATIVADO!
-
-class TradeExecutorService {
+class LearningBrainService {
   constructor() {
-    this.running = false;
-    this.paused = false;
-    this.openTrades = db.getTrades({ status: "OPEN" });
-    this.tradeHistory = [];
+    this.isRunning = false;  // 🔥 FLAG ADICIONADA
     
-    // 🆕 FILA DE SINAIS PENDENTES (para quando não tem saldo)
-    this.pendingSignals = [];
-    
-    // 🆕 HISTÓRICO DE PERFORMANCE POR AGENTE
-    this.agentPerformance = {
-      trend: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0, winRate: 0 },
-      hft: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0, winRate: 0 },
-      arbitrage: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0, winRate: 0 },
-      deep: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0, winRate: 0 },
-      sentiment: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0, winRate: 0 }
+    // Conhecimento acumulado
+    this.knowledge = {
+      patterns: [],      // Padrões descobertos
+      insights: [],      // Insights gerados
+      correlations: [],  // Correlações entre eventos
+      improvements: []   // Melhorias enviadas para robôs
     };
     
-    this.dailyStats = {
-      totalTrades: 0,
-      wins: 0,
-      losses: 0,
-      totalProfit: 0,
-      totalLoss: 0,
-      date: new Date().toDateString()
+    // Agentes que estão aprendendo
+    this.agents = [
+      { id: "trend", name: "Trend Aztron", lastInsight: null, performance: [], weight: 1.0, enabled: true },
+      { id: "hft", name: "HFT Service", lastInsight: null, performance: [], weight: 0.9, enabled: true },
+      { id: "arbitrage", name: "Arbitrage Service", lastInsight: null, performance: [], weight: 0.8, enabled: true },
+      { id: "sentiment", name: "Sentiment Service", lastInsight: null, performance: [], weight: 0.7, enabled: true },
+      { id: "deep", name: "Deep Pattern", lastInsight: null, performance: [], weight: 0.8, enabled: true }
+    ];
+    
+    // Configurações
+    this.config = {
+      processInterval: 300000,    // 5 minutos
+      distributeInterval: 600000, // 10 minutos
+      minConfidenceToShare: 0.6,
+      maxPatternAge: 86400000     // 24 horas
     };
-    
-    // 🆕 MAPEAMENTO DE AGENTES
-    this.agentMapping = {
-      "CONSENSUS_MACD": "trend",
-      "CONSENSUS_RSI Strategy": "trend",
-      "RSI Strategy": "trend",
-      "MACD Strategy": "trend",
-      "HFT_CONSENSUS": "hft",
-      "HFT": "hft",
-      "ARBITRAGE": "arbitrage",
-      "DEEP_PATTERN": "deep"
-    };
-    
-    // 🆕 ESCUTA SINAIS DE TODOS OS ROBÔS
-    eventBus.on("signal", async (signal) => {
-      logger.info(`🔍 DEBUG: TradeExecutor recebeu evento "signal"`, { service: "TradeExecutor" });
-      await this.handleSignal(signal);
-    });
-    
-    // 🆕 ESCUTA QUANDO CAPITAL VOLTA (para processar fila)
-    eventBus.on("capital:return", (capitalReturn) => {
-      logger.info(`💸 Capital retornou para ${capitalReturn.agentId}: $${capitalReturn.amount}`, { service: "TradeExecutor" });
-      this._processPendingSignals(capitalReturn.agentId);
-    });
-    
-    // 🔥 ESCUTA APRENDIZADO COMPARTILHADO DO LEARNING BRAIN
-    eventBus.on("improvement:broadcast", (improvement) => {
-      if (improvement.affectedAgents?.includes("trend") || !improvement.to) {
-        this._applyImprovement(improvement);
-      }
-    });
-    
-    // 🔥 ESCUTA MELHORIAS DIRETAS PARA O TREND
-    eventBus.on("improvement:trend", (improvement) => {
-      this._applyImprovement(improvement);
-    });
-    
-    // 🆕 ESCUTA DECISÕES DO CONSELHO
-    eventBus.on("council:decision", async (decision) => {
-      if (decision && decision.action !== "HOLD") {
-        logger.info(`🏛️ Conselho decidiu: ${decision.action} (força: ${(decision.strength*100).toFixed(0)}%)`, { service: "TradeExecutor" });
-      }
-    });
-    
-    logger.info("TradeExecutorService initialized", { 
-      service: "TradeExecutor",
-      openTradesCount: this.openTrades.length,
-      version: "v5.2.0"
-    });
-    
-    // 🔥🔥🔥 FORÇA O START DO TRADE EXECUTOR 🔥🔥🔥
-    logger.info("🔍 DEBUG: Chamando this.start() no construtor", { service: "TradeExecutor" });
-    this.start();
   }
 
-  // 🔥 APLICA MELHORIAS DO LEARNING BRAIN
-  _applyImprovement(improvement) {
-    if (!improvement) return;
+  start() {
+    this.isRunning = true;  // 🔥 FLAG ADICIONADA
     
-    logger.info(`🧠 Trend recebeu melhoria do LearningBrain: ${improvement.recommendation}`, { service: "TradeExecutor" });
+    logger.info("🧠 LEARNING BRAIN INICIADO - O CÉREBRO QUE APRENDE");
+    logger.info("   Aguardando aprendizados dos robôs...");
     
-    switch(improvement.recommendation) {
-      case "AUMENTAR_TAMANHO_POSICAO":
-        // Aumenta temporariamente o multiplicador de tamanho
-        this.tempSizeMultiplier = Math.min(1.5, (this.tempSizeMultiplier || 1) + 0.1);
-        logger.info(`📈 Trend aumentando tamanho de posição: ${this.tempSizeMultiplier}x`, { service: "TradeExecutor" });
-        break;
-        
-      case "REDUZIR_TAMANHO_POSICAO_E_AGUARDAR_CONFIRMACAO":
-        this.tempSizeMultiplier = Math.max(0.5, (this.tempSizeMultiplier || 1) - 0.2);
-        logger.info(`📉 Trend reduzindo tamanho de posição: ${this.tempSizeMultiplier}x`, { service: "TradeExecutor" });
-        break;
-        
-      case "AUMENTAR_SENSIBILIDADE_SPREAD_E_VELOCIDADE":
-        // Aumenta confiança base para sinais
-        this.baseConfidenceBoost = Math.min(15, (this.baseConfidenceBoost || 0) + 5);
-        logger.info(`⚡ Trend aumentando sensibilidade: +${this.baseConfidenceBoost}% confiança`, { service: "TradeExecutor" });
-        break;
-        
-      case "REDUZIR_RISCO":
-        this.tempSizeMultiplier = Math.max(0.5, (this.tempSizeMultiplier || 1) * 0.8);
-        logger.info(`⚠️ Trend reduzindo risco: ${this.tempSizeMultiplier}x`, { service: "TradeExecutor" });
-        break;
-        
-      default:
-        logger.debug(`Melhoria recebida: ${improvement.recommendation}`, { service: "TradeExecutor" });
-    }
+    // Escuta aprendizados de cada robô
+    EventBus.on("learning:trend", (data) => this.receiveLearning("trend", data));
+    EventBus.on("learning:hft", (data) => this.receiveLearning("hft", data));
+    EventBus.on("learning:arbitrage", (data) => this.receiveLearning("arbitrage", data));
+    EventBus.on("learning:sentiment", (data) => this.receiveLearning("sentiment", data));
+    EventBus.on("learning:deep", (data) => this.receiveLearning("deep", data));
     
-    // Reseta ajustes temporários após 1 hora
-    setTimeout(() => {
-      this.tempSizeMultiplier = 1;
-      this.baseConfidenceBoost = 0;
-      logger.info(`🔄 Trend resetou ajustes temporários`, { service: "TradeExecutor" });
-    }, 3600000);
+    // Escuta resultados de trades para avaliar acertos
+    EventBus.on("trade:closed", (trade) => this.evaluateLearning(trade));
+    
+    // Processa aprendizados periodicamente
+    setInterval(() => this.processLearnings(), this.config.processInterval);
+    
+    // Distribui melhorias periodicamente
+    setInterval(() => this.distributeImprovements(), this.config.distributeInterval);
+    
+    logger.info("🧠 LearningBrain ouvindo eventos de aprendizado...");
   }
 
-  async handleSignal(signal) {
-    logger.info(`🔍 DEBUG: handleSignal chamado! running=${this.running}, paused=${this.paused}`, { service: "TradeExecutor" });
+  receiveLearning(agentId, learning) {
+    const agent = this.agents.find(a => a.id === agentId);
+    if (!agent || !agent.enabled) return;
     
-    if (!this.running || this.paused) {
-      logger.warn(`❌ TradeExecutor NÃO ESTÁ RODANDO! running=${this.running}, paused=${this.paused}`, { service: "TradeExecutor" });
+    // Verifica confiança mínima
+    if (learning.confidence < this.config.minConfidenceToShare) {
+      logger.debug(`${agent.name}: Aprendizado ignorado (confiança ${learning.confidence})`);
       return;
     }
     
-    if (signal.status !== "ACTIVE") {
-      logger.debug(`⚠️ Signal status não é ACTIVE: ${signal.status}`, { service: "TradeExecutor" });
-      return;
-    }
+    agent.lastInsight = {
+      type: learning.type,
+      content: learning.content,
+      confidence: learning.confidence,
+      data: learning.data || {},
+      timestamp: Date.now()
+    };
     
-    logger.info(`📡 Signal received: ${signal.type} ${signal.symbol} (conf: ${signal.confidence}%) from ${signal.strategy || signal.agent}`, { 
-      service: "TradeExecutor",
-      agent: signal.agent || this._getAgentFromStrategy(signal.strategy)
+    this.knowledge.insights.push({
+      id: `insight_${Date.now()}_${agentId}`,
+      agent: agentId,
+      agentName: agent.name,
+      type: learning.type,
+      content: learning.content,
+      confidence: learning.confidence,
+      data: learning.data,
+      timestamp: Date.now()
     });
     
-    const agent = signal.agent || this._getAgentFromStrategy(signal.strategy);
+    // Mantém só os últimos 500 insights
+    if (this.knowledge.insights.length > 500) {
+      this.knowledge.insights = this.knowledge.insights.slice(-500);
+    }
     
-    // 🔥 CHAMA LEARNING BRAIN PARA PREDIZER O SINAL
-    let prediction = null;
-    if (learningBrain && learningBrain.predictSignal) {
-      try {
-        prediction = learningBrain.predictSignal({
-          symbol: signal.symbol,
-          type: signal.type,
-          confidence: signal.confidence,
-          strategy: signal.strategy,
-          agent: agent
-        });
-        
-        if (prediction) {
-          logger.info(`🧠 LearningBrain prediction: ${prediction.recommendation} (padrão: ${prediction.patternUsed || "nenhum"}, win rate esperado: ${prediction.predictedWinRate}%)`, { service: "TradeExecutor" });
-          
-          // 🔥 SE O LEARNING BRAIN RECOMENDA PULAR, NÃO EXECUTA
-          if (prediction.recommendation === "SKIP") {
-            logger.info(`⏭️ LearningBrain recomendou pular: ${prediction.patternUsed || "no pattern"}`, { service: "TradeExecutor" });
-            return;
-          }
-          
-          // 🔥 SE RECOMENDA AGUARDAR, TAMBÉM NÃO EXECUTA AGORA
-          if (prediction.recommendation === "WAIT") {
-            logger.info(`⏸️ LearningBrain recomendou aguardar`, { service: "TradeExecutor" });
-            return;
+    logger.info(`📚 ${agent.name} compartilhou: ${learning.content.substring(0, 100)} (confiança: ${(learning.confidence*100).toFixed(0)}%)`);
+    
+    // Processa imediatamente se for um insight importante
+    if (learning.priority === "high") {
+      this.processUrgentLearning(agentId, learning);
+    }
+  }
+
+  processUrgentLearning(agentId, learning) {
+    logger.info(`⚡ Processamento urgente de ${agentId}: ${learning.content}`);
+    
+    // Notifica outros agentes que podem se beneficiar
+    const affectedAgents = this.findAffectedAgents(agentId, learning);
+    
+    for (const targetAgent of affectedAgents) {
+      const improvement = {
+        to: targetAgent,
+        from: agentId,
+        type: "urgent_insight",
+        content: learning.content,
+        confidence: learning.confidence,
+        recommendation: this.generateRecommendation(learning),
+        timestamp: Date.now()
+      };
+      
+      EventBus.emit(`improvement:${targetAgent}`, improvement);
+      logger.info(`📤 Insight urgente enviado para ${targetAgent}: ${improvement.recommendation}`);
+    }
+  }
+
+  findAffectedAgents(sourceAgentId, learning) {
+    // Lógica para encontrar quais robôs se beneficiam deste aprendizado
+    const affected = [];
+    
+    switch (sourceAgentId) {
+      case "trend":
+        // Trend detectou algo? HFT e Arbitrage podem se beneficiar
+        if (learning.type === "trend") {
+          affected.push("hft", "arbitrage");
+        }
+        break;
+      case "hft":
+        // HFT detectou volatilidade? Trend e Arbitrage se beneficiam
+        if (learning.type === "volatility") {
+          affected.push("trend", "arbitrage");
+        }
+        break;
+      case "arbitrage":
+        // Arbitrage detectou spread? HFT se beneficia
+        if (learning.type === "spread") {
+          affected.push("hft");
+        }
+        break;
+      case "sentiment":
+        // Sentimento afeta todos
+        affected.push("trend", "hft", "arbitrage", "deep");
+        break;
+      case "deep":
+        // Padrões profundos afetam todos
+        affected.push("trend", "hft", "arbitrage");
+        break;
+    }
+    
+    return affected;
+  }
+
+  generateRecommendation(learning) {
+    const recommendations = {
+      trend: {
+        uptrend: "AUMENTAR_TAMANHO_POSICAO",
+        downtrend: "REDUZIR_TAMANHO_POSICAO_E_AGUARDAR_CONFIRMACAO",
+        reversal: "REVISAR_TODAS_POSICOES_E_CONSIDERAR_CONTRA_TREND"
+      },
+      hft: {
+        volatility: "AUMENTAR_SENSIBILIDADE_SPREAD_E_VELOCIDADE",
+        spread: "AUMENTAR_SENSIBILIDADE_SPREAD_E_VELOCIDADE"
+      },
+      sentiment: {
+        fear: "REDUZIR_RISCO",
+        greed: "REDUZIR_RISCO"
+      }
+    };
+    
+    // Tenta encontrar recomendação específica
+    for (const [type, mapping] of Object.entries(recommendations)) {
+      if (learning.content.toLowerCase().includes(type)) {
+        for (const [key, value] of Object.entries(mapping)) {
+          if (learning.content.toLowerCase().includes(key)) {
+            return value;
           }
         }
-      } catch (err) {
-        logger.error(`Erro no LearningBrain.predictSignal: ${err.message}`, { service: "TradeExecutor" });
       }
     }
     
-    const result = await this.executeTrade({
-      symbol: signal.symbol,
-      side: signal.type,
-      strategy: signal.strategy,
-      confidence: signal.confidence,
-      agent: agent,
-      prediction: prediction
-    });
+    return "MANTER_ESTRATEGIA";
+  }
+
+  processLearnings() {
+    if (!this.isRunning) return;
     
-    if (result.success) {
-      logger.info(`✅ Trade executed: ${signal.type} ${signal.symbol} (agent: ${agent})`, { service: "TradeExecutor" });
-    } else {
-      logger.warn(`❌ Trade failed: ${result.reason}`, { service: "TradeExecutor" });
+    logger.info("🧠 Processando aprendizados coletivos...");
+    
+    const recentInsights = this.knowledge.insights.slice(-100);
+    
+    // 1. Busca PADRÕES entre diferentes robôs
+    const patterns = this.findCrossPatterns(recentInsights);
+    
+    // 2. Busca CORRELAÇÕES temporais
+    const correlations = this.findTemporalCorrelations(recentInsights);
+    
+    // 3. Gera INSIGHTS derivados
+    const derivedInsights = this.generateDerivedInsights(patterns, correlations);
+    
+    // 4. Salva novos padrões
+    for (const pattern of patterns) {
+      const exists = this.knowledge.patterns.some(p => 
+        p.name === pattern.name && 
+        (Date.now() - p.timestamp) < this.config.maxPatternAge
+      );
       
-      // 🔥 SE FOI FALTA DE SALDO, GUARDA NA FILA
-      if (result.reason === "INSUFFICIENT_BALANCE" || (result.reason && result.reason.includes("saldo"))) {
-        this.pendingSignals.push({
-          symbol: signal.symbol,
-          side: signal.type,
-          strategy: signal.strategy,
-          confidence: signal.confidence,
-          agent: agent,
-          prediction: prediction,
+      if (!exists) {
+        this.knowledge.patterns.push({
+          ...pattern,
           timestamp: Date.now(),
-          originalSignal: signal
+          occurrences: 1
         });
-        logger.info(`📥 Signal enfileirado para ${agent} (falta saldo). Total pendentes: ${this.pendingSignals.length}`, { service: "TradeExecutor" });
+        logger.info(`🎯 NOVO PADRÃO: ${pattern.name} - ${pattern.description}`);
+      } else {
+        // Atualiza ocorrência
+        const existing = this.knowledge.patterns.find(p => p.name === pattern.name);
+        if (existing) existing.occurrences++;
+      }
+    }
+    
+    // 5. Distribui novos insights
+    for (const insight of derivedInsights) {
+      this.knowledge.insights.push(insight);
+      logger.info(`💡 NOVO INSIGHT: ${insight.content}`);
+    }
+    
+    // 6. Notifica agentes afetados
+    this.notifyAffectedAgents(patterns, derivedInsights);
+    
+    // Limpa padrões antigos
+    this.cleanOldPatterns();
+  }
+
+  findCrossPatterns(insights) {
+    const patterns = [];
+    
+    // Agrupa por tipo e tempo
+    const trendInsights = insights.filter(i => i.agent === "trend" && i.timestamp > Date.now() - 3600000);
+    const sentimentInsights = insights.filter(i => i.agent === "sentiment" && i.timestamp > Date.now() - 3600000);
+    const hftInsights = insights.filter(i => i.agent === "hft" && i.timestamp > Date.now() - 3600000);
+    const arbitrageInsights = insights.filter(i => i.agent === "arbitrage" && i.timestamp > Date.now() - 3600000);
+    
+    // Padrão: Trend viu alta + Sentimento viu medo
+    const trendBullish = trendInsights.some(i => 
+      i.content.toLowerCase().includes("alta") || 
+      i.content.toLowerCase().includes("bull") ||
+      i.content.toLowerCase().includes("subindo")
+    );
+    
+    const sentimentFear = sentimentInsights.some(i => 
+      i.content.toLowerCase().includes("medo") || 
+      i.content.toLowerCase().includes("fear") ||
+      i.content.toLowerCase().includes("extreme")
+    );
+    
+    if (trendBullish && sentimentFear) {
+      patterns.push({
+        name: "FEAR_BULLISH_REVERSAL",
+        description: "Trend indica alta mas mercado está com medo - possível reversão ou oportunidade de entrada",
+        recommendation: "REDUZIR_TAMANHO_POSICAO_E_AGUARDAR_CONFIRMACAO",
+        affectedAgents: ["trend", "hft"],
+        confidence: 0.75,
+        severity: "medium"
+      });
+    }
+    
+    // Padrão: Arbitrage viu spread + HFT viu volatilidade
+    const arbitrageSpread = arbitrageInsights.some(i => 
+      i.content.toLowerCase().includes("spread")
+    );
+    
+    const hftVolatility = hftInsights.some(i => 
+      i.content.toLowerCase().includes("volátil") || 
+      i.content.toLowerCase().includes("volatility")
+    );
+    
+    if (arbitrageSpread && hftVolatility) {
+      patterns.push({
+        name: "ARBITRAGE_VOLATILITY",
+        description: "Spread detectado combinado com alta volatilidade - oportunidade de arbitragem",
+        recommendation: "AUMENTAR_SENSIBILIDADE_SPREAD_E_VELOCIDADE",
+        affectedAgents: ["arbitrage", "hft"],
+        confidence: 0.85,
+        severity: "high"
+      });
+    }
+    
+    // Padrão: Sentimento extremo + Deep pattern confirmando
+    const sentimentExtreme = sentimentInsights.some(i => 
+      i.content.toLowerCase().includes("extreme") || 
+      (i.confidence > 0.8 && (i.content.includes("fear") || i.content.includes("greed")))
+    );
+    
+    if (sentimentExtreme) {
+      patterns.push({
+        name: "EXTREME_SENTIMENT_ALERT",
+        description: "Sentimento extremo detectado - possível ponto de virada do mercado",
+        recommendation: "REVISAR_TODAS_POSICOES_E_CONSIDERAR_CONTRA_TREND",
+        affectedAgents: ["trend", "hft", "arbitrage"],
+        confidence: 0.7,
+        severity: "high"
+      });
+    }
+    
+    return patterns;
+  }
+
+  findTemporalCorrelations(insights) {
+    const correlations = [];
+    // Implementar análise de correlação temporal
+    return correlations;
+  }
+
+  generateDerivedInsights(patterns, correlations) {
+    const insights = [];
+    
+    for (const pattern of patterns) {
+      insights.push({
+        id: `derived_${Date.now()}_${pattern.name}`,
+        type: "pattern_insight",
+        content: pattern.description,
+        recommendation: pattern.recommendation,
+        confidence: pattern.confidence,
+        source: "learning_brain",
+        severity: pattern.severity,
+        timestamp: Date.now()
+      });
+    }
+    
+    return insights;
+  }
+
+  notifyAffectedAgents(patterns, insights) {
+    const notifications = [];
+    
+    for (const pattern of patterns) {
+      for (const agentId of pattern.affectedAgents) {
+        notifications.push({
+          to: agentId,
+          from: "learning_brain",
+          type: "pattern_alert",
+          content: pattern.description,
+          recommendation: pattern.recommendation,
+          confidence: pattern.confidence,
+          severity: pattern.severity,
+          timestamp: Date.now()
+        });
+      }
+    }
+    
+    for (const insight of insights) {
+      notifications.push({
+        to: null, // broadcast
+        from: "learning_brain",
+        type: "insight",
+        content: insight.content,
+        recommendation: insight.recommendation,
+        confidence: insight.confidence,
+        severity: insight.severity || "medium",
+        timestamp: Date.now()
+      });
+    }
+    
+    for (const notif of notifications) {
+      // Salva melhoria
+      this.knowledge.improvements.push({
+        ...notif,
+        sent: false
+      });
+      
+      if (notif.to) {
+        EventBus.emit(`improvement:${notif.to}`, notif);
+        logger.info(`📤 Melhoria enviada para ${notif.to}: ${notif.recommendation}`);
+      } else {
+        EventBus.emit("improvement:broadcast", notif);
+        logger.info(`📤 Insight broadcast: ${notif.content.substring(0, 80)}`);
       }
     }
   }
 
-  _getAgentFromStrategy(strategy) {
-    if (!strategy) return "trend";
-    if (strategy.includes("HFT")) return "hft";
-    if (strategy.includes("ARBITRAGE")) return "arbitrage";
-    if (strategy.includes("DEEP")) return "deep";
-    if (strategy.includes("SENTIMENT")) return "sentiment";
-    return "trend";
-  }
-
-  _isWeekend() {
-    const day = new Date().getDay();
-    return day === 0 || day === 6;
-  }
-
-  start() { 
-    logger.info("🔍 DEBUG: start() chamado!", { service: "TradeExecutor" });
-    this.running = true; 
-    this.paused = false;
-    this._monitorOpenTrades();
-    logger.info("🚀 TradeExecutorService started - AGORA VAI EXECUTAR TRADES!", { service: "TradeExecutor" });
-    logger.info(`🔍 DEBUG: running agora é ${this.running}`, { service: "TradeExecutor" });
-    return { success: true };
-  }
-  
-  stop() { 
-    this.running = false; 
-    logger.info("TradeExecutorService stopped", { service: "TradeExecutor" });
-    return { success: true };
-  }
-
-  pauseTrading() { 
-    this.paused = true; 
-    logger.info("Trading paused", { service: "TradeExecutor" });
-    return { success: true, paused: true };
-  }
-
-  resumeTrading() { 
-    this.paused = false; 
-    logger.info("Trading resumed", { service: "TradeExecutor" });
-    return { success: true, paused: false };
-  }
-
-  isPaused() { return this.paused; }
-
-  async executeTrade({ symbol, side, strategy, confidence, agent, prediction }) {
-    logger.info(`🔍 DEBUG: executeTrade chamado para ${side} ${symbol}`, { service: "TradeExecutor" });
+  distributeImprovements() {
+    if (!this.isRunning) return;
     
-    if (!this.running) {
-      logger.error(`❌ executeTrade: Engine stopped! running=${this.running}`, { service: "TradeExecutor" });
-      return { success: false, reason: "Engine stopped" };
-    }
-    if (this.paused) {
-      logger.error(`❌ executeTrade: Trading paused!`, { service: "TradeExecutor" });
-      return { success: false, reason: "Trading paused" };
-    }
+    logger.info("📤 Distribuindo melhorias pendentes...");
     
-    const ticker = exchange.getTicker(symbol);
-    if (!ticker) {
-      logger.error(`❌ No ticker data for ${symbol}`, { service: "TradeExecutor" });
-      return { success: false, reason: "No ticker data" };
-    }
-
-    const cfg = db.getConfig();
+    const pendingImprovements = this.knowledge.improvements.filter(i => !i.sent && !i.expired);
     
-    // 🆕 AJUSTA POSITION SIZE BASEADO NA SEQUÊNCIA DE LUCROS/PREJUÍZOS
-    const performance = this.agentPerformance[agent] || { consecutiveWins: 0, consecutiveLosses: 0 };
-    let adjustedConfidence = confidence;
-    let sizeMultiplier = 1.0;
-    
-    // 🔥 APLICA AJUSTES DO LEARNING BRAIN
-    if (this.tempSizeMultiplier) {
-      sizeMultiplier = sizeMultiplier * this.tempSizeMultiplier;
-    }
-    if (this.baseConfidenceBoost) {
-      adjustedConfidence = Math.min(98, adjustedConfidence + this.baseConfidenceBoost);
-    }
-    
-    if (performance.consecutiveWins >= 3) {
-      sizeMultiplier = Math.min(1.5, sizeMultiplier * (1 + (performance.consecutiveWins * 0.1)));
-      adjustedConfidence = Math.min(98, adjustedConfidence + (performance.consecutiveWins * 2));
-      logger.info(`📈 ${agent} em sequência de ${performance.consecutiveWins} lucros! Multiplicador: ${sizeMultiplier}x, Confiança ajustada: ${adjustedConfidence}%`, { service: "TradeExecutor" });
-    } else if (performance.consecutiveLosses >= 2) {
-      sizeMultiplier = Math.max(0.5, sizeMultiplier * (1 - (performance.consecutiveLosses * 0.2)));
-      adjustedConfidence = Math.max(50, adjustedConfidence - (performance.consecutiveLosses * 5));
-      logger.info(`📉 ${agent} em sequência de ${performance.consecutiveLosses} prejuízos! Multiplicador: ${sizeMultiplier}x, Confiança ajustada: ${adjustedConfidence}%`, { service: "TradeExecutor" });
-      
-      if (performance.consecutiveLosses >= 3) {
-        logger.warn(`⛔ ${agent} perdeu ${performance.consecutiveLosses} seguidas. Pulando este trade para evitar mais perdas.`, { service: "TradeExecutor" });
-        return { success: false, reason: "CONSECUTIVE_LOSSES_BREAK" };
-      }
-    }
-    
-    const positionInfo = risk.calculatePositionSize(symbol, ticker.price, cfg.stopLoss, agent, adjustedConfidence);
-    
-    if (positionInfo.qty && positionInfo.qty > 0) {
-      positionInfo.qty = positionInfo.qty * sizeMultiplier;
-    }
-    
-    if (!positionInfo.qty || positionInfo.qty <= 0) {
-      logger.warn(`❌ Invalid quantity: ${positionInfo.qty} for ${symbol}`, { service: "TradeExecutor" });
-      return { success: false, reason: "Invalid quantity" };
-    }
-    
-    const estimatedCost = positionInfo.qty * ticker.price;
-    logger.info(`🔍 DEBUG: estimatedCost = ${estimatedCost} (sizeMultiplier: ${sizeMultiplier}x)`, { service: "TradeExecutor" });
-    
-    const capitalRequest = await this._requestCapital(agent, estimatedCost, `Trade: ${side} ${symbol}`);
-    
-    if (!capitalRequest.success) {
-      logger.warn(`❌ Trade rejeitado pelo CapitalDistributor: ${capitalRequest.reason}`, { service: "TradeExecutor" });
-      
-      if (capitalRequest.reason === "INSUFFICIENT_BALANCE" || (capitalRequest.reason && capitalRequest.reason.includes("saldo"))) {
-        return { success: false, reason: "INSUFFICIENT_BALANCE" };
+    for (const improvement of pendingImprovements) {
+      // Verifica se ainda é relevante (menos de 1 hora)
+      if (Date.now() - improvement.timestamp > 3600000) {
+        improvement.expired = true;
+        continue;
       }
       
-      return { success: false, reason: capitalRequest.reason };
+      if (improvement.to) {
+        EventBus.emit(`improvement:${improvement.to}`, improvement);
+      } else {
+        EventBus.emit("improvement:broadcast", improvement);
+      }
+      
+      improvement.sent = true;
+      improvement.sentAt = Date.now();
+      
+      logger.info(`📤 Melhoria distribuída: ${improvement.recommendation}`);
     }
     
-    const validation = risk.validateTrade(symbol, side, estimatedCost, agent);
-    if (!validation.approved) {
-      this._returnCapital(agent, estimatedCost, `Validation failed: ${validation.errors.join("; ")}`);
-      return { success: false, reason: validation.errors.join("; ") };
-    }
+    // Limpa melhorias antigas
+    this.knowledge.improvements = this.knowledge.improvements.filter(i => 
+      !i.expired && Date.now() - i.timestamp < 86400000
+    );
+  }
 
-    const slip = slippage.estimate(symbol, side, positionInfo.qty);
-    if (!slip.acceptable) {
-      this._returnCapital(agent, estimatedCost, `Slippage too high: ${slip.estimated}%`);
-      return { success: false, reason: `Slippage too high: ${slip.estimated}%` };
+  evaluateLearning(trade) {
+    const agent = this.agents.find(a => a.id === trade.agent);
+    if (!agent) return;
+    
+    agent.performance.push({
+      profit: trade.profit || 0,
+      loss: trade.loss || 0,
+      timestamp: Date.now(),
+      tradeId: trade.id
+    });
+    
+    // Mantém só últimos 100 trades
+    if (agent.performance.length > 100) {
+      agent.performance.shift();
     }
+    
+    // Calcula win rate recente
+    const recentTrades = agent.performance.slice(-20);
+    const wins = recentTrades.filter(t => t.profit > 0).length;
+    const winRate = wins / recentTrades.length;
+    
+    // Ajusta peso baseado em performance
+    if (winRate > 0.6) {
+      agent.weight = Math.min(1.0, agent.weight + 0.02);
+    } else if (winRate < 0.4) {
+      agent.weight = Math.max(0.5, agent.weight - 0.02);
+    }
+  }
 
+  cleanOldPatterns() {
+    const now = Date.now();
+    this.knowledge.patterns = this.knowledge.patterns.filter(p => 
+      now - p.timestamp < this.config.maxPatternAge
+    );
+  }
+
+  // ==================== 🔥 MÉTODO PREDICT SIGNAL ====================
+
+  predictSignal(signal) {
     try {
-      let stopLossPercent = cfg.stopLoss;
+      const { symbol, type, confidence, agent, strategy } = signal;
       
-      if (performance.consecutiveWins >= 2) {
-        stopLossPercent = cfg.stopLoss * 0.7;
-        logger.info(`🎯 Stop loss reduzido para ${stopLossPercent}% (sequência de lucros)`, { service: "TradeExecutor" });
-      } else if (performance.consecutiveLosses >= 2) {
-        stopLossPercent = cfg.stopLoss * 1.3;
-        logger.info(`🎯 Stop loss aumentado para ${stopLossPercent}% (sequência de prejuízos)`, { service: "TradeExecutor" });
+      // Busca padrões similares no histórico
+      const similarPatterns = this.knowledge.patterns.filter(p => 
+        p.affectedAgents?.includes(agent) && 
+        p.confidence > 0.6
+      );
+      
+      if (similarPatterns.length > 0) {
+        const bestPattern = similarPatterns.sort((a, b) => b.confidence - a.confidence)[0];
+        
+        // Ajusta confiança baseada no padrão
+        let adjustedConfidence = confidence;
+        let recommendation = "FOLLOW";
+        
+        if (bestPattern.name === "EXTREME_SENTIMENT_ALERT") {
+          if (type === "BUY") {
+            adjustedConfidence = Math.max(40, confidence - 20);
+            recommendation = "SKIP";
+          } else if (type === "SELL") {
+            adjustedConfidence = Math.min(95, confidence + 10);
+            recommendation = "FOLLOW";
+          }
+        }
+        
+        if (bestPattern.name === "FEAR_BULLISH_REVERSAL") {
+          if (type === "BUY") {
+            adjustedConfidence = Math.min(95, confidence + 15);
+            recommendation = "FOLLOW";
+          }
+        }
+        
+        if (bestPattern.name === "ARBITRAGE_VOLATILITY") {
+          if (strategy?.includes("ARBITRAGE")) {
+            adjustedConfidence = Math.min(95, confidence + 20);
+            recommendation = "FOLLOW";
+          }
+        }
+        
+        return {
+          predictedWinRate: bestPattern.confidence * 100,
+          confidence: Math.round(adjustedConfidence),
+          patternUsed: bestPattern.name,
+          basedOnTrades: bestPattern.occurrences || 5,
+          recommendation: recommendation
+        };
       }
       
-      const stopPrice = side === "BUY" 
-        ? ticker.price * (1 - stopLossPercent / 100)
-        : ticker.price * (1 + stopLossPercent / 100);
+      // Verifica sentimento extremo recente
+      const recentExtremeSentiment = this.knowledge.insights.some(i => 
+        i.type === "extreme_sentiment" && 
+        i.content?.toLowerCase().includes("extreme") &&
+        (Date.now() - new Date(i.timestamp).getTime()) < 3600000
+      );
       
-      const takeProfitPrice = side === "BUY"
-        ? ticker.price * (1 + cfg.takeProfit / 100)
-        : ticker.price * (1 - cfg.takeProfit / 100);
+      if (recentExtremeSentiment && type === "BUY") {
+        return {
+          predictedWinRate: 45,
+          confidence: Math.max(40, confidence - 15),
+          patternUsed: "extreme_sentiment",
+          basedOnTrades: 0,
+          recommendation: "SKIP"
+        };
+      }
       
-      logger.info(`🔍 DEBUG: Chamando exchange.placeOrder para ${symbol}`, { service: "TradeExecutor" });
-      const order = await exchange.placeOrder(symbol, side, positionInfo.qty, ticker.price, agent);
+      // Verifica performance do agente
+      const agentPerf = this.agents.find(a => a.id === agent);
+      if (agentPerf && agentPerf.performance.length >= 10) {
+        const recentTrades = agentPerf.performance.slice(-10);
+        const wins = recentTrades.filter(t => t.profit > 0).length;
+        const agentWinRate = wins / recentTrades.length;
+        
+        if (agentWinRate < 0.4) {
+          return {
+            predictedWinRate: agentWinRate * 100,
+            confidence: Math.max(30, confidence - 20),
+            patternUsed: "poor_performance",
+            basedOnTrades: recentTrades.length,
+            recommendation: "SKIP"
+          };
+        }
+        
+        if (agentWinRate > 0.6) {
+          return {
+            predictedWinRate: agentWinRate * 100,
+            confidence: Math.min(95, confidence + 10),
+            patternUsed: "good_performance",
+            basedOnTrades: recentTrades.length,
+            recommendation: "FOLLOW"
+          };
+        }
+      }
       
-      const trade = {
-        id: `trade_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        symbol,
-        side,
-        strategy: strategy || "unknown",
-        agent: agent,
-        confidence: adjustedConfidence,
-        status: "OPEN",
-        entryPrice: order.price,
-        exitPrice: null,
-        qty: positionInfo.qty,
-        estimatedCost: estimatedCost,
-        pnl: 0,
-        pnlPct: 0,
-        stopLoss: stopPrice,
-        takeProfit: takeProfitPrice,
-        stopLossPercent: stopLossPercent,
-        takeProfitPercent: cfg.takeProfit,
-        sizeMultiplier: sizeMultiplier,
-        predictionUsed: prediction?.patternUsed || null,
-        predictedWinRate: prediction?.predictedWinRate || null,
-        timestamp: new Date().toISOString(),
-        orderId: order.orderId,
+      // Comportamento padrão
+      return {
+        predictedWinRate: 50,
+        confidence: confidence,
+        patternUsed: null,
+        basedOnTrades: 0,
+        recommendation: confidence > 70 ? "FOLLOW" : confidence > 50 ? "CAUTIOUS" : "WAIT"
       };
       
-      this.openTrades.push(trade);
-      db.addTrade(trade);
-      
-      eventBus.emit("trade", { action: "OPEN", trade });
-      eventBus.emit("trade:opened", trade);
-      
-      logger.info(`✅ Trade opened: ${side} ${positionInfo.qty.toFixed(6)} ${symbol} @ $${order.price.toFixed(2)} (agent: ${agent})`, { 
-        service: "TradeExecutor",
-        tradeId: trade.id,
-        agent: agent,
-        confidence: adjustedConfidence,
-        sizeMultiplier: sizeMultiplier,
-        patternUsed: prediction?.patternUsed || "nenhum"
-      });
-      
-      this.dailyStats.totalTrades++;
-      
-      return { success: true, trade };
-      
-    } catch (err) {
-      logger.error(`Trade execution failed: ${err.message}`, { service: "TradeExecutor" });
-      this._returnCapital(agent, estimatedCost, `Execution error: ${err.message}`);
-      return { success: false, reason: err.message };
-    }
-  }
-
-  async _requestCapital(agent, amount, reason) {
-    logger.info(`🔍 DEBUG: _requestCapital chamado para ${agent} - amount: ${amount}`, { service: "TradeExecutor" });
-    return new Promise((resolve) => {
-      capitalDistributor.handleRequest({
-        agentId: agent,
-        amount: amount,
-        reason: reason,
-        callback: resolve
-      });
-    });
-  }
-
-  _returnCapital(agent, amount, reason) {
-    logger.info(`🔍 DEBUG: _returnCapital chamado para ${agent} - amount: ${amount}`, { service: "TradeExecutor" });
-    eventBus.emit("capital:return", {
-      agentId: agent,
-      amount: amount,
-      reason: reason
-    });
-  }
-
-  _processPendingSignals(agentId) {
-    const toProcess = this.pendingSignals.filter(s => s.agent === agentId);
-    if (toProcess.length === 0) return;
-    
-    logger.info(`🔄 Processando ${toProcess.length} sinais pendentes para ${agentId}`, { service: "TradeExecutor" });
-    
-    this.pendingSignals = this.pendingSignals.filter(s => s.agent !== agentId);
-    
-    for (const signal of toProcess) {
-      logger.info(`🔄 Tentando sinal pendente: ${signal.side} ${signal.symbol} para ${agentId}`, { service: "TradeExecutor" });
-      this.executeTrade({
-        symbol: signal.symbol,
-        side: signal.side,
-        strategy: signal.strategy,
-        confidence: signal.confidence,
-        agent: signal.agent,
-        prediction: signal.prediction
-      }).then(result => {
-        if (result.success) {
-          logger.info(`✅ Sinal pendente executado com sucesso: ${signal.side} ${signal.symbol}`, { service: "TradeExecutor" });
-        } else if (result.reason === "INSUFFICIENT_BALANCE") {
-          this.pendingSignals.push(signal);
-          logger.info(`📥 Sinal pendente recolocado na fila para ${agentId} (saldo ainda insuficiente)`, { service: "TradeExecutor" });
-        } else {
-          logger.warn(`❌ Sinal pendente falhou: ${result.reason}`, { service: "TradeExecutor" });
-        }
-      });
-    }
-  }
-
-  // 🔥 ATUALIZA PERFORMANCE E COMPARTILHA COM LEARNING BRAIN
-  _updateAgentPerformance(agent, isWin, pnl) {
-    if (!this.agentPerformance[agent]) {
-      this.agentPerformance[agent] = { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0, winRate: 0 };
-    }
-    
-    const perf = this.agentPerformance[agent];
-    
-    if (isWin) {
-      perf.consecutiveWins++;
-      perf.consecutiveLosses = 0;
-      perf.totalWins++;
-      perf.lastResult = "WIN";
-      logger.info(`🏆 ${agent} - Vitória #${perf.consecutiveWins} consecutiva! Lucro: $${pnl.toFixed(2)}`, { service: "TradeExecutor" });
-      
-      if (perf.consecutiveWins >= 3) {
-        logger.info(`✨ ${agent} está EM FASE! ${perf.consecutiveWins} vitórias seguidas.`, { service: "TradeExecutor" });
-        eventBus.emit("agent:hotStreak", { agentId: agent, streak: perf.consecutiveWins });
-      }
-    } else {
-      perf.consecutiveLosses++;
-      perf.consecutiveWins = 0;
-      perf.totalLosses++;
-      perf.lastResult = "LOSS";
-      logger.warn(`😞 ${agent} - Derrota #${perf.consecutiveLosses} consecutiva! Prejuízo: $${Math.abs(pnl).toFixed(2)}`, { service: "TradeExecutor" });
-      
-      if (perf.consecutiveLosses >= 3) {
-        logger.error(`🚨 ${agent} em queda livre! ${perf.consecutiveLosses} derrotas seguidas.`, { service: "TradeExecutor" });
-        eventBus.emit("agent:coldStreak", { agentId: agent, streak: perf.consecutiveLosses });
-      }
-    }
-    
-    const totalTrades = perf.totalWins + perf.totalLosses;
-    perf.winRate = totalTrades > 0 ? (perf.totalWins / totalTrades) * 100 : 0;
-    
-    // 🔥 ENVIA APRENDIZADO PARA O LEARNING BRAIN
-    eventBus.emit(`learning:${agent}`, {
-      type: "performance_update",
-      content: `${agent} win rate ${perf.winRate.toFixed(0)}% após ${totalTrades} trades`,
-      confidence: perf.winRate / 100,
-      priority: perf.consecutiveWins >= 3 ? "high" : "normal",
-      data: {
-        winRate: perf.winRate,
-        totalTrades: totalTrades,
-        consecutiveWins: perf.consecutiveWins,
-        consecutiveLosses: perf.consecutiveLosses,
-        lastProfit: pnl
-      }
-    });
-    
-    // Salva no banco
-    if (db.updateAgentPerformance) {
-      db.updateAgentPerformance(agent, perf);
-    }
-    
-    return perf;
-  }
-
-  _monitorOpenTrades() {
-    logger.info("🔍 DEBUG: _monitorOpenTrades iniciado", { service: "TradeExecutor" });
-    setInterval(() => {
-      if (!this.running) return;
-      
-      const cfg = db.getConfig();
-      
-      for (const trade of [...this.openTrades]) {
-        const ticker = exchange.getTicker(trade.symbol);
-        if (!ticker) continue;
-        
-        const currentPrice = ticker.price;
-        const side = trade.side;
-        const pnlPct = side === "BUY"
-          ? ((currentPrice - trade.entryPrice) / trade.entryPrice) * 100
-          : ((trade.entryPrice - currentPrice) / trade.entryPrice) * 100;
-        const pnl = (pnlPct / 100) * trade.entryPrice * trade.qty;
-        
-        trade.pnl = Math.round(pnl * 100) / 100;
-        trade.pnlPct = Math.round(pnlPct * 100) / 100;
-        
-        const hitSL = side === "BUY" 
-          ? currentPrice <= trade.stopLoss 
-          : currentPrice >= trade.stopLoss;
-        const hitTP = side === "BUY" 
-          ? currentPrice >= trade.takeProfit 
-          : currentPrice <= trade.takeProfit;
-        
-        if (hitSL || hitTP) {
-          trade.status = "CLOSED";
-          trade.exitPrice = currentPrice;
-          trade.closedAt = new Date().toISOString();
-          trade.result = hitTP ? "WIN" : "LOSS";
-          
-          this.openTrades = this.openTrades.filter(t => t.id !== trade.id);
-          this.tradeHistory.unshift(trade);
-          if (this.tradeHistory.length > 200) this.tradeHistory.pop();
-          
-          db.addTrade(trade);
-          
-          const isWin = trade.result === "WIN";
-          this._updateAgentPerformance(trade.agent, isWin, trade.pnl);
-          
-          if (trade.pnl > 0) {
-            this.dailyStats.wins++;
-            this.dailyStats.totalProfit += trade.pnl;
-            
-            if (tokenomics && tokenomics.processProfit) {
-              tokenomics.processProfit(trade.pnl);
-            }
-            
-            eventBus.emit("agent:profit", {
-              agentId: trade.agent,
-              amount: trade.pnl,
-              tradeId: trade.id
-            });
-            
-            eventBus.emit("trade:closed", {
-              agent: trade.agent,
-              profit: trade.pnl,
-              id: trade.id,
-              trade: trade
-            });
-            
-            logger.info(`💰 WIN: ${trade.symbol} +$${trade.pnl.toFixed(2)} (${trade.pnlPct.toFixed(2)}%) - ${trade.agent}`, { service: "TradeExecutor" });
-          } else {
-            this.dailyStats.losses++;
-            this.dailyStats.totalLoss += Math.abs(trade.pnl);
-            
-            eventBus.emit("trade:closed", {
-              agent: trade.agent,
-              loss: Math.abs(trade.pnl),
-              id: trade.id,
-              trade: trade
-            });
-            
-            logger.warn(`❌ LOSS: ${trade.symbol} $${trade.pnl.toFixed(2)} (${trade.pnlPct.toFixed(2)}%) - ${trade.agent}`, { service: "TradeExecutor" });
-          }
-          
-          const netResult = trade.pnl;
-          if (netResult !== 0) {
-            this._returnCapital(trade.agent, netResult, `Trade closed: ${trade.result}`);
-          }
-          
-          eventBus.emit("trade", { action: "CLOSE", trade, reason: hitTP ? "TAKE_PROFIT" : "STOP_LOSS" });
-        }
-      }
-    }, 5000);
-  }
-
-  resetDailyStats() {
-    const today = new Date().toDateString();
-    if (this.dailyStats.date !== today) {
-      this.dailyStats = {
-        totalTrades: 0,
-        wins: 0,
-        losses: 0,
-        totalProfit: 0,
-        totalLoss: 0,
-        date: today
+    } catch (error) {
+      logger.error(`Erro no predictSignal: ${error.message}`);
+      return {
+        predictedWinRate: 50,
+        confidence: signal?.confidence || 50,
+        patternUsed: null,
+        basedOnTrades: 0,
+        recommendation: "FOLLOW"
       };
     }
   }
 
-  getOpenTrades() { 
-    return this.openTrades; 
-  }
-  
-  getTotalOpenPnl() { 
-    return this.openTrades.reduce((a, t) => a + t.pnl, 0); 
-  }
-  
-  getTradeHistory(limit = 50) {
-    return this.tradeHistory.slice(0, limit);
-  }
-  
-  getStats() {
-    this.resetDailyStats();
-    
-    const allClosedTrades = this.tradeHistory.filter(t => t.status === "CLOSED");
-    const totalWins = allClosedTrades.filter(t => t.result === "WIN").length;
-    const totalLosses = allClosedTrades.filter(t => t.result === "LOSS").length;
-    const totalProfit = allClosedTrades.reduce((sum, t) => sum + (t.pnl > 0 ? t.pnl : 0), 0);
-    const totalLoss = Math.abs(allClosedTrades.reduce((sum, t) => sum + (t.pnl < 0 ? t.pnl : 0), 0));
+  getKnowledge() {
+    const recentPerformance = {};
+    for (const agent of this.agents) {
+      const recentTrades = agent.performance.slice(-20);
+      const wins = recentTrades.filter(t => t.profit > 0).length;
+      recentPerformance[agent.id] = {
+        winRate: recentTrades.length > 0 ? (wins / recentTrades.length * 100).toFixed(1) : 0,
+        totalTrades: agent.performance.length,
+        weight: agent.weight
+      };
+    }
     
     return {
-      daily: this.dailyStats,
-      overall: {
-        totalTrades: allClosedTrades.length,
-        wins: totalWins,
-        losses: totalLosses,
-        winRate: allClosedTrades.length > 0 ? (totalWins / allClosedTrades.length) * 100 : 0,
-        totalProfit: totalProfit,
-        totalLoss: totalLoss,
-        netProfit: totalProfit - totalLoss,
-        sharpeRatio: 1.2
-      },
-      openTrades: {
-        count: this.openTrades.length,
-        totalPnl: this.getTotalOpenPnl()
-      },
-      byAgent: this._getStatsByAgent(allClosedTrades),
-      agentPerformance: this.agentPerformance
+      patterns: this.knowledge.patterns.slice(-20),
+      insights: this.knowledge.insights.slice(-20),
+      improvements: this.knowledge.improvements.filter(i => !i.sent).slice(-10),
+      agentPerformance: recentPerformance,
+      lastProcessed: new Date().toISOString()
     };
   }
-  
-  _getStatsByAgent(trades) {
-    const byAgent = {};
-    
-    for (const trade of trades) {
-      const agent = trade.agent || "unknown";
-      if (!byAgent[agent]) {
-        byAgent[agent] = { total: 0, wins: 0, losses: 0, totalProfit: 0 };
-      }
-      byAgent[agent].total++;
-      if (trade.result === "WIN") {
-        byAgent[agent].wins++;
-        byAgent[agent].totalProfit += trade.pnl;
-      } else {
-        byAgent[agent].losses++;
-      }
-    }
-    
-    for (const agent of Object.keys(byAgent)) {
-      byAgent[agent].winRate = (byAgent[agent].wins / byAgent[agent].total) * 100;
-    }
-    
-    return byAgent;
+
+  getStatus() {
+    return {
+      running: this.isRunning,
+      totalInsights: this.knowledge.insights.length,
+      totalPatterns: this.knowledge.patterns.length,
+      totalImprovements: this.knowledge.improvements.length,
+      agents: this.agents.map(a => ({
+        id: a.id,
+        name: a.name,
+        enabled: a.enabled,
+        weight: a.weight,
+        lastInsight: a.lastInsight ? {
+          content: a.lastInsight.content.substring(0, 100),
+          confidence: a.lastInsight.confidence,
+          age: Date.now() - a.lastInsight.timestamp
+        } : null
+      })),
+      config: this.config
+    };
   }
-  
-  resetAgentPerformance(agent) {
-    if (this.agentPerformance[agent]) {
-      this.agentPerformance[agent] = {
-        consecutiveWins: 0,
-        consecutiveLosses: 0,
-        lastResult: null,
-        totalWins: 0,
-        totalLosses: 0,
-        winRate: 0
-      };
-      logger.info(`🔄 Performance do agente ${agent} foi resetada`, { service: "TradeExecutor" });
-    }
-    return { success: true };
-  }
-  
-  getAgentPerformance(agent) {
-    return this.agentPerformance[agent] || { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null };
-  }
-  
-  async switchToLiveMode() {
-    logger.info("🔄 TradeExecutor migrando para LIVE MODE...", { service: "TradeExecutor" });
-    const result = await capitalDistributor.switchToLiveMode();
-    
-    if (result.success) {
-      logger.info("✅ TradeExecutor agora opera em LIVE MODE", { service: "TradeExecutor" });
-    } else {
-      logger.error("❌ Falha ao migrar TradeExecutor para LIVE MODE", { service: "TradeExecutor" });
-    }
-    
-    return result;
+
+  stop() {
+    this.isRunning = false;
+    logger.info("LearningBrainService parado");
   }
 }
 
-module.exports = new TradeExecutorService();
+module.exports = new LearningBrainService();
