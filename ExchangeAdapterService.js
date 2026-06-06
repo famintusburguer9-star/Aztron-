@@ -38,8 +38,6 @@ class ExchangeAdapterService {
     this.prices = {};
     this.tradeHistory = [];
     
-    // 🔥 NÃO TEM MAIS paperBalance! Usa CapitalDistributor
-    
     // Inicializa preços
     for (const [symbol, price] of Object.entries(INITIAL_PRICES)) {
       this.prices[symbol] = {
@@ -66,12 +64,11 @@ class ExchangeAdapterService {
   }
 
   /**
-   * 🔥 Obtém saldo do agente via CapitalDistributor
+   * Obtém saldo do agente via CapitalDistributor
    */
   getAgentBalance(agentId = "trend") {
     const agentInfo = capitalDistributor.getAgentInfo(agentId);
     const balance = agentInfo ? agentInfo.balance : 0;
-    logger.debug(`💰 Saldo do agente ${agentId}: $${balance.toFixed(2)}`);
     return balance;
   }
 
@@ -193,7 +190,7 @@ class ExchangeAdapterService {
   }
 
   /**
-   * 🔥 EXECUTA ORDEM - usa CapitalDistributor para validar saldo
+   * 🔥 EXECUTA ORDEM - DEBITA O CAPITAL DO CAPITAL DISTRIBUTOR
    */
   async placeOrder(symbol, side, qty, price = null, agentId = "trend") {
     if (this.mode === "PAPER") {
@@ -210,11 +207,25 @@ class ExchangeAdapterService {
         if (currentBalance < cost) {
           throw new Error(`Insufficient balance for ${agentId}. Need $${cost.toFixed(2)}, have $${currentBalance.toFixed(2)}`);
         }
-        
-        logger.info(`[PAPER] ${side} ${qty.toFixed(6)} ${symbol} @ $${execPrice.toFixed(2)} | Total: $${cost.toFixed(2)} | Agent: ${agentId} | Balance: $${currentBalance.toFixed(2)}`);
-      } else {
-        logger.info(`[PAPER] ${side} ${qty.toFixed(6)} ${symbol} @ $${execPrice.toFixed(2)} | Total: $${cost.toFixed(2)} | Agent: ${agentId}`);
       }
+      
+      // 🔥🔥🔥 CRÍTICO: RESERVA/DEBITA O CAPITAL DO CAPITAL DISTRIBUTOR
+      const capitalResult = await new Promise((resolve) => {
+        capitalDistributor.handleRequest({
+          agentId: agentId,
+          amount: cost,
+          reason: `Trade: ${side} ${symbol}`,
+          callback: resolve
+        });
+      });
+      
+      if (!capitalResult.success) {
+        throw new Error(`Failed to reserve capital: ${capitalResult.reason}`);
+      }
+      
+      const newBalance = currentBalance - cost;
+      
+      logger.info(`[PAPER] ${side} ${qty.toFixed(6)} ${symbol} @ $${execPrice.toFixed(2)} | Total: $${cost.toFixed(2)} | Agent: ${agentId} | Balance: $${currentBalance.toFixed(2)} → $${newBalance.toFixed(2)}`);
       
       const order = { 
         orderId: `PAPER_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`, 
@@ -226,7 +237,9 @@ class ExchangeAdapterService {
         status: "FILLED", 
         timestamp: new Date().toISOString(),
         mode: "PAPER",
-        agent: agentId
+        agent: agentId,
+        balanceBefore: currentBalance,
+        balanceAfter: newBalance
       };
       
       this.tradeHistory.unshift(order);
@@ -240,7 +253,7 @@ class ExchangeAdapterService {
   }
 
   /**
-   * 🔥 RETORNA SALDO DO AGENTE (via CapitalDistributor)
+   * RETORNA SALDO DO AGENTE (via CapitalDistributor)
    */
   getBalance(agentId = "trend") {
     return { USDT: this.getAgentBalance(agentId) };
