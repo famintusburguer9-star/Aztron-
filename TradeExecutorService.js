@@ -75,10 +75,11 @@ class TradeExecutorService {
       return;
     }
     
-    if (this._isWeekend() && signal.agent !== "hft") {
-      logger.debug(`Ignorando sinal de ${signal.agent} no fim de semana`, { service: "TradeExecutor" });
-      return;
-    }
+    // 🔥🔥🔥 BLOQUEIO DE FIM DE SEMANA REMOVIDO 🔥🔥🔥
+    // if (this._isWeekend() && signal.agent !== "hft") {
+    //   logger.debug(`Ignorando sinal de ${signal.agent} no fim de semana`);
+    //   return;
+    // }
     
     logger.info(`📡 Signal received: ${signal.type} ${signal.symbol} (conf: ${signal.confidence}%) from ${signal.strategy || signal.agent}`, { 
       service: "TradeExecutor",
