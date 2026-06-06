@@ -38,7 +38,7 @@ const tokenomics = require("./TokenomicsService");
 // 🆕 HFT SERVICE
 const hft = require("./HFTService");
 
-// ==================== 🆕 NOVOS SERVICOS (2) ====================
+// ==================== 🆕 NOVOS SERVICOS ====================
 const capitalDistributor = require("./CapitalDistributorService");
 const learningBrain = require("./LearningBrainService");
 
@@ -679,26 +679,36 @@ async function main() {
   await learningBrain.start();
   
   // 4. SERVIÇOS DE MERCADO E ANÁLISE
-  await marketConsciousness.start?.();
-  await tokenomics.start?.();
+  if (marketConsciousness.start) await marketConsciousness.start();
+  if (tokenomics.start) await tokenomics.start();
   
   // 5. HFT SERVICE (já modificado para usar CapitalDistributor)
+  logger.info("🤖 Inicializando HFTService...", { service: "Startup" });
   await hft.initialize();
   
-  // 6. ARBITRAGE SERVICE
-  const arbitrageStart = arbitrageService.start();
-  if (arbitrageStart && arbitrageStart.then) await arbitrageStart;
+  // 6. ARBITRAGE SERVICE (inicializa e aguarda capital)
+  logger.info("🚀 Inicializando ArbitrageService...", { service: "Startup" });
+  await arbitrageService.initialize();
   
   // 7. ORCHESTRATOR (inicia os serviços restantes)
+  logger.info("🎮 Inicializando Orchestrator...", { service: "Startup" });
   await orchestrator.init();
   await orchestrator.start();
   
-  // 8. AUTO-START HFT (se configurado)
+  // 8. VERIFICAÇÃO FINAL
   const config = db.getConfig();
-  if (config.hftEnabled) {
-    await hft.start();
-    logger.info("🚀 HFT Service auto-started", { service: "HFT" });
-  }
+  logger.info(`📊 Configuração atual: Modo=${config.mode}, Exchange=${config.exchange}`, { service: "Startup" });
+  
+  // Exibe status dos serviços
+  setTimeout(() => {
+    logger.info("========== STATUS FINAL DOS SERVIÇOS ==========", { service: "Startup" });
+    logger.info(`💰 Capital Distributor: ${capitalDistributor.isRunning ? "✅ rodando" : "❌ parado"}`, { service: "Startup" });
+    logger.info(`🧠 Learning Brain: ${learningBrain.isRunning ? "✅ rodando" : "❌ parado"}`, { service: "Startup" });
+    logger.info(`🤖 HFT: ${hft.running ? "✅ rodando" : "❌ parado"}`, { service: "Startup" });
+    logger.info(`🚀 Arbitrage: ${arbitrageService.isRunning ? "✅ rodando" : "❌ parado"}`, { service: "Startup" });
+    logger.info(`🎮 Orchestrator: ${orchestrator.running ? "✅ rodando" : "❌ parado"}`, { service: "Startup" });
+    logger.info("===============================================", { service: "Startup" });
+  }, 3000);
 
   server.listen(PORT, "0.0.0.0", () => {
     logger.info(`AZTRON Backend running on port ${PORT}`, { service: "Orchestrator" });
@@ -712,4 +722,8 @@ async function main() {
   });
 }
 
-main().catch(err => { logger.error(`Fatal startup error: ${err.message}`); process.exit(1); });
+main().catch(err => { 
+  logger.error(`Fatal startup error: ${err.message}`, { service: "Startup" });
+  logger.error(err.stack, { service: "Startup" });
+  process.exit(1); 
+});
