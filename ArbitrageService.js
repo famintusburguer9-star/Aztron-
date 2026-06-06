@@ -1,12 +1,12 @@
 const EventBus = require("./EventBus");
-const exchange = require("./ExchangeAdapterService"); // ← USA O EXCHANGE ADAPTER!
+const exchange = require("./ExchangeAdapterService");
 const logger = require("./LoggerService");
 const capitalDistributor = require("./CapitalDistributorService");
 
 class ArbitrageService {
   constructor() {
     this.logger = logger;
-    this.exchange = exchange;  // ← USA O EXCHANGE ADAPTER!
+    this.exchange = exchange;
     this.isRunning = false;
     this.agentId = "arbitrage";
     this.capitalAllocated = 0;
@@ -15,18 +15,20 @@ class ArbitrageService {
     
     this.lastScanTime = 0;
     this.lastTradeTime = 0;
-    this.scanInterval = 30000;
-    this.tradeCooldown = 120000;
     
-    this.minSpread = 1.2;
-    this.maxPositionPerTrade = 500;
+    // 🔥 CONFIGURAÇÕES MAIS AGRESSIVAS
+    this.scanInterval = 20000;           // 20 segundos (antes 30s)
+    this.tradeCooldown = 60000;          // 60 segundos (antes 120s)
+    
+    this.minSpread = 0.3;                // 🔥 0.3% (antes 1.2%)
+    this.maxPositionPerTrade = 1000;     // 🔥 $1000 (antes $500)
     this.consecutiveLosses = 0;
     this.opportunities = [];
     this.tradeHistory = [];
     
     this.learningParams = {
-      spreadThreshold: 1.2,
-      riskMultiplier: 1.0,
+      spreadThreshold: 0.3,              // 🔥 0.3% (antes 1.2%)
+      riskMultiplier: 1.2,              // 🔥 1.2 (antes 1.0)
     };
     
     EventBus.on("consciousness:learning", (learning) => this.learnFromOthers(learning));
@@ -37,13 +39,13 @@ class ArbitrageService {
       this.logger.info(`💰 Arbitrage recebeu capital: $${this.capitalAllocated}`);
     });
     
-    this.logger.info("ArbitrageService initialized - usando simulação do ExchangeAdapter");
+    this.logger.info("ArbitrageService initialized - MODO AGRESSIVO (spread 0.3%)");
   }
 
   onSentimentExtreme(sentiment) {
     if (sentiment.type === "EXTREME_FEAR") {
-      this.learningParams.spreadThreshold = 0.8;
-      this.learningParams.riskMultiplier = 1.3;
+      this.learningParams.spreadThreshold = 0.2;  // 🔥 Ainda mais baixo no medo extremo
+      this.learningParams.riskMultiplier = 1.5;
     }
   }
 
@@ -56,7 +58,7 @@ class ArbitrageService {
     }
     
     this.isRunning = true;
-    this.logger.info("🚀 ArbitrageService iniciado - usando simulação realista");
+    this.logger.info("🚀 ArbitrageService iniciado - MODO AGRESSIVO (spread threshold 0.3%)");
     
     this.scanLoop();
     return { success: true };
@@ -91,18 +93,19 @@ class ArbitrageService {
     try {
       if (this.capitalAllocated <= 0) return;
       
-      // 🔥 USA O MÉTODO DO EXCHANGE ADAPTER (SIMULAÇÃO REALISTA)
+      // Busca oportunidade via ExchangeAdapter
       const opportunity = await this.exchange.getArbitrageOpportunity("BTCUSDT");
       
       if (!opportunity) return;
       
       const adjustedThreshold = this.learningParams.spreadThreshold * this.learningParams.riskMultiplier;
       
-      if (opportunity.spread > adjustedThreshold && this.capitalAllocated > 100) {
+      // 🔥 CRITÉRIO MAIS AGRESSIVO
+      if (opportunity.spread > adjustedThreshold && this.capitalAllocated > 50) {
         const estimatedProfit = this.capitalAllocated * opportunity.spread / 100;
         const capitalRequired = Math.min(this.capitalAllocated, this.maxPositionPerTrade);
         
-        this.logger.info(`💰 Oportunidade: spread ${opportunity.spread}% | Lucro estimado: $${estimatedProfit.toFixed(2)}`);
+        this.logger.info(`💰 OPORTUNIDADE: spread ${opportunity.spread}% | Lucro estimado: $${estimatedProfit.toFixed(2)}`);
         this.logger.info(`   Comprar em: ${opportunity.buyExchange} | Vender em: ${opportunity.sellExchange}`);
         
         const opp = {
@@ -142,9 +145,9 @@ class ArbitrageService {
     
     this.lastTradeTime = now;
     
-    // Simula resultado (70% de chance de lucro)
-    const isWin = Math.random() < 0.7;
-    const profit = isWin ? opportunity.estimatedProfit * (0.5 + Math.random() * 0.5) : -opportunity.estimatedProfit * 0.5;
+    // 🔥 SIMULA RESULTADO (60% de chance de lucro, mais realista)
+    const isWin = Math.random() < 0.6;
+    const profit = isWin ? opportunity.estimatedProfit * (0.3 + Math.random() * 0.7) : -opportunity.estimatedProfit * 0.6;
     
     const trade = {
       id: `arb_trade_${Date.now()}`,
@@ -161,11 +164,18 @@ class ArbitrageService {
     
     if (profit > 0) {
       this.dailyProfit += profit;
-      this.logger.info(`✅ Arbitrage lucrou: $${profit.toFixed(2)}`);
+      this.logger.info(`✅ Arbitrage lucrou: $${profit.toFixed(2)} (spread: ${opportunity.spread}%)`);
       EventBus.emit("agent:profit", { agentId: this.agentId, amount: profit, tradeId: trade.id });
     } else {
       this.dailyLoss += Math.abs(profit);
+      this.consecutiveLosses++;
       this.logger.warn(`❌ Arbitrage perdeu: $${Math.abs(profit).toFixed(2)}`);
+      
+      if (this.consecutiveLosses >= 3) {
+        this.logger.warn("⚠️ 3 perdas consecutivas! Reduzindo spreadThreshold");
+        this.learningParams.spreadThreshold *= 0.9;
+        this.consecutiveLosses = 0;
+      }
     }
     
     EventBus.emit("capital:return", { agentId: this.agentId, amount: profit, reason: `Trade closed` });
