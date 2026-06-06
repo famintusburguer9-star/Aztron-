@@ -453,6 +453,129 @@ class LearningBrainService {
     );
   }
 
+  // ==================== 🔥 MÉTODO PREDICT SIGNAL ====================
+
+  /**
+   * PREDIZ O SUCESSO DE UM SINAL BASEADO NO APRENDIZADO COLETIVO
+   * @param {object} signal - Sinal recebido
+   * @returns {object} - Predição com recomendação
+   */
+  predictSignal(signal) {
+    try {
+      const { symbol, type, confidence, agent, strategy } = signal;
+      
+      // Busca padrões similares no histórico
+      const similarPatterns = this.knowledge.patterns.filter(p => 
+        p.affectedAgents?.includes(agent) && 
+        p.confidence > 0.6
+      );
+      
+      if (similarPatterns.length > 0) {
+        const bestPattern = similarPatterns.sort((a, b) => b.confidence - a.confidence)[0];
+        
+        // Ajusta confiança baseada no padrão
+        let adjustedConfidence = confidence;
+        let recommendation = "FOLLOW";
+        
+        if (bestPattern.name === "EXTREME_SENTIMENT_ALERT") {
+          if (type === "BUY") {
+            adjustedConfidence = Math.max(40, confidence - 20);
+            recommendation = "SKIP";
+          } else if (type === "SELL") {
+            adjustedConfidence = Math.min(95, confidence + 10);
+            recommendation = "FOLLOW";
+          }
+        }
+        
+        if (bestPattern.name === "FEAR_BULLISH_REVERSAL") {
+          if (type === "BUY") {
+            adjustedConfidence = Math.min(95, confidence + 15);
+            recommendation = "FOLLOW";
+          }
+        }
+        
+        if (bestPattern.name === "ARBITRAGE_VOLATILITY") {
+          if (strategy?.includes("ARBITRAGE")) {
+            adjustedConfidence = Math.min(95, confidence + 20);
+            recommendation = "FOLLOW";
+          }
+        }
+        
+        return {
+          predictedWinRate: bestPattern.confidence * 100,
+          confidence: Math.round(adjustedConfidence),
+          patternUsed: bestPattern.name,
+          basedOnTrades: bestPattern.occurrences || 5,
+          recommendation: recommendation
+        };
+      }
+      
+      // Verifica sentimento extremo recente
+      const recentExtremeSentiment = this.knowledge.insights.some(i => 
+        i.type === "extreme_sentiment" && 
+        i.content?.toLowerCase().includes("extreme") &&
+        (Date.now() - new Date(i.timestamp).getTime()) < 3600000
+      );
+      
+      if (recentExtremeSentiment && type === "BUY") {
+        return {
+          predictedWinRate: 45,
+          confidence: Math.max(40, confidence - 15),
+          patternUsed: "extreme_sentiment",
+          basedOnTrades: 0,
+          recommendation: "SKIP"
+        };
+      }
+      
+      // Verifica performance do agente
+      const agentPerf = this.agents.find(a => a.id === agent);
+      if (agentPerf && agentPerf.performance.length >= 10) {
+        const recentTrades = agentPerf.performance.slice(-10);
+        const wins = recentTrades.filter(t => t.profit > 0).length;
+        const agentWinRate = wins / recentTrades.length;
+        
+        if (agentWinRate < 0.4) {
+          return {
+            predictedWinRate: agentWinRate * 100,
+            confidence: Math.max(30, confidence - 20),
+            patternUsed: "poor_performance",
+            basedOnTrades: recentTrades.length,
+            recommendation: "SKIP"
+          };
+        }
+        
+        if (agentWinRate > 0.6) {
+          return {
+            predictedWinRate: agentWinRate * 100,
+            confidence: Math.min(95, confidence + 10),
+            patternUsed: "good_performance",
+            basedOnTrades: recentTrades.length,
+            recommendation: "FOLLOW"
+          };
+        }
+      }
+      
+      // Comportamento padrão
+      return {
+        predictedWinRate: 50,
+        confidence: confidence,
+        patternUsed: null,
+        basedOnTrades: 0,
+        recommendation: confidence > 70 ? "FOLLOW" : confidence > 50 ? "CAUTIOUS" : "WAIT"
+      };
+      
+    } catch (error) {
+      logger.error(`Erro no predictSignal: ${error.message}`);
+      return {
+        predictedWinRate: 50,
+        confidence: signal?.confidence || 50,
+        patternUsed: null,
+        basedOnTrades: 0,
+        recommendation: "FOLLOW"
+      };
+    }
+  }
+
   getKnowledge() {
     const recentPerformance = {};
     for (const agent of this.agents) {
