@@ -24,28 +24,106 @@ class MarketConsciousnessService {
     this._mode = "OPERATING";
     this._manuallyPaused = false;
     this._weeklyReport = null;
-    this._dailyReports = []; // NOVO: histórico de relatórios diários
+    this._dailyReports = [];
     this._memecoins = {};
     this._hypeAlerts = [];
     this._lastCheck = null;
     this._studyStarted = null;
     this._pauseReason = null;
+    this.isRunning = false;
+    
+    // 🆕 IDENTIFICAÇÃO PARA LEARNING BRAIN
+    this.agentId = "market_consciousness";
+    
+    // 🆕 CONFIGURAÇÕES AJUSTÁVEIS
+    this.config = {
+      winRateThreshold: 45,
+      drawdownThreshold: 8,
+      autoStudyEnabled: true,
+      hypeSensitivity: 1.0,
+      reportSharingEnabled: true
+    };
 
     eventBus.on("tick", () => this._maybeAutoEvaluate());
+    
+    // 🆕 ESCUTA MELHORIAS DO LEARNING BRAIN
+    eventBus.on("improvement:broadcast", (improvement) => {
+      if (improvement.affectedAgents?.includes(this.agentId)) {
+        this.applyImprovement(improvement);
+      }
+    });
+    
+    eventBus.on(`improvement:${this.agentId}`, (improvement) => {
+      this.applyImprovement(improvement);
+    });
+    
     this._initMemecoins();
-    this._scheduleDailyReport(); // NOVO: agenda relatório diário
+    this._scheduleDailyReport();
+  }
+
+  // 🆕 APLICA MELHORIAS DO LEARNING BRAIN
+  applyImprovement(improvement) {
+    if (!improvement) return;
+    
+    logger.info(`🧠 MarketConsciousness recebeu melhoria: ${improvement.recommendation}`, { service: "MarketConsciousness" });
+    
+    switch(improvement.recommendation) {
+      case "AUMENTAR_SENSIBILIDADE":
+        this.config.winRateThreshold = Math.max(35, this.config.winRateThreshold - 5);
+        this.config.hypeSensitivity = Math.min(1.5, this.config.hypeSensitivity * 1.1);
+        logger.info(`⚡ MarketConsciousness aumentou sensibilidade: winRateThreshold=${this.config.winRateThreshold}%, hypeSensitivity=${this.config.hypeSensitivity}x`, { service: "MarketConsciousness" });
+        break;
+        
+      case "REDUZIR_RISCO":
+        this.config.winRateThreshold = Math.min(55, this.config.winRateThreshold + 5);
+        this.config.hypeSensitivity = Math.max(0.5, this.config.hypeSensitivity * 0.9);
+        logger.info(`📉 MarketConsciousness reduziu risco: winRateThreshold=${this.config.winRateThreshold}%, hypeSensitivity=${this.config.hypeSensitivity}x`, { service: "MarketConsciousness" });
+        break;
+        
+      case "REVISAR_TODAS_POSICOES_E_CONSIDERAR_CONTRA_TREND":
+        if (this._mode === "OPERATING" && !this._manuallyPaused) {
+          this.pauseTrading("Alerta de mercado - recomendação de revisão do Learning Brain");
+        }
+        break;
+    }
+    
+    // Reseta ajustes após 1 hora
+    setTimeout(() => {
+      this.config.winRateThreshold = 45;
+      this.config.hypeSensitivity = 1.0;
+      logger.info(`🔄 MarketConsciousness resetou ajustes`, { service: "MarketConsciousness" });
+    }, 3600000);
+  }
+
+  // 🆕 COMPARTILHA INSIGHT COM LEARNING BRAIN
+  _shareInsight(type, content, confidence, data = {}) {
+    if (!this.config.reportSharingEnabled) return;
+    
+    eventBus.emit(`learning:${this.agentId}`, {
+      type: type,
+      content: content,
+      confidence: Math.min(0.95, confidence),
+      priority: confidence > 0.8 ? "high" : "normal",
+      data: data
+    });
   }
 
   async start() {
+    this.isRunning = true;
     logger.info("MarketConsciousnessService started", { service: "MarketConsciousness" });
     return { success: true };
   }
 
-  // ─── NOVO: Agenda relatório diário à meia-noite ─────────────────────────────
+  stop() {
+    this.isRunning = false;
+    logger.info("MarketConsciousnessService stopped", { service: "MarketConsciousness" });
+    return { success: true };
+  }
+
   _scheduleDailyReport() {
     const now = new Date();
     const night = new Date(now);
-    night.setHours(24, 0, 0, 0); // meia-noite
+    night.setHours(24, 0, 0, 0);
     const delay = night.getTime() - now.getTime();
     
     setTimeout(() => {
@@ -54,7 +132,6 @@ class MarketConsciousnessService {
     }, delay);
   }
 
-  // ─── NOVO: Gera e salva relatório diário ────────────────────────────────────
   _generateDailyReport() {
     try {
       const db = require("./DatabaseService");
@@ -74,12 +151,8 @@ class MarketConsciousnessService {
       const bestTrade = todayTrades.length > 0 ? todayTrades.reduce((best, t) => (t.pnl > best.pnl ? t : best), todayTrades[0]) : null;
       const worstTrade = todayTrades.length > 0 ? todayTrades.reduce((worst, t) => (t.pnl < worst.pnl ? t : worst), todayTrades[0]) : null;
       
-      // Pega saldo atual
       const balance = exchange.getBalance();
-      const totalEquity = balance.USDT + Object.entries(balance).filter(([k]) => k !== "USDT").reduce((a, [k, v]) => {
-        const ticker = exchange.getTicker(`${k}USDT`);
-        return a + (ticker ? v * ticker.price : 0);
-      }, 0);
+      let totalEquity = balance.USDT || 0;
       
       const dailyReport = {
         date: new Date().toISOString(),
@@ -103,18 +176,22 @@ class MarketConsciousnessService {
         generatedAt: new Date().toISOString()
       };
       
-      // Armazena no histórico (mantém últimos 30 dias)
       this._dailyReports.unshift(dailyReport);
       if (this._dailyReports.length > 30) this._dailyReports.pop();
       
-      // Persiste no storage
       const storage = require("./storage");
       storage.set("dailyReports", this._dailyReports);
       
       logger.info(`[Consciousness] Relatório Diário gerado: ${dailyReport.totalTrades} trades, PnL: $${dailyReport.totalPnl}, WR: ${dailyReport.winRate}%`, { service: "MarketConsciousness" });
       
-      // Emite evento para WebSocket
       eventBus.emit("daily_report", dailyReport);
+      
+      // 🆕 COMPARTILHA COM LEARNING BRAIN
+      this._shareInsight("daily_report", 
+        `Relatório diário: ${dailyReport.totalTrades} trades, WR ${dailyReport.winRate}%, PnL $${dailyReport.totalPnl}`,
+        dailyReport.winRate / 100,
+        dailyReport
+      );
       
       return dailyReport;
     } catch (error) {
@@ -122,8 +199,6 @@ class MarketConsciousnessService {
       return null;
     }
   }
-
-  // ─── Volume helpers ─────────────────────────────────────────────────────────
 
   _get7DayAvgVolume(sym) {
     const hist = _volumeHistory[sym];
@@ -138,8 +213,6 @@ class MarketConsciousnessService {
     return avg * mult;
   }
 
-  // ─── Sentiment helpers ──────────────────────────────────────────────────────
-
   _getSentimentForCoin(sym) {
     try {
       const sentiment = require("./SentimentService");
@@ -152,8 +225,6 @@ class MarketConsciousnessService {
       return "neutral";
     }
   }
-
-  // ─── Viral trend analysis ───────────────────────────────────────────────────
 
   _analyzeViralTrend(sym) {
     const meta = MEMECOIN_META[sym];
@@ -169,8 +240,6 @@ class MarketConsciousnessService {
       platform: meta.community,
     };
   }
-
-  // ─── Hype score calculation ─────────────────────────────────────────────────
 
   _calcHypeScore(volChange, viralGrowth, sentiment, priceChange) {
     let score = 30;
@@ -191,8 +260,6 @@ class MarketConsciousnessService {
     
     return Math.min(100, Math.max(0, +score.toFixed(1)));
   }
-
-  // ─── Init & periodic update ─────────────────────────────────────────────────
 
   _initMemecoins() {
     MEMECOINS.forEach(sym => {
@@ -261,12 +328,17 @@ class MarketConsciousnessService {
         if (this._hypeAlerts.length > 20) this._hypeAlerts = this._hypeAlerts.slice(0, 20);
         eventBus.emit("alert", { id: alert.id, type: "WARNING", message: alert.message, timestamp: alert.timestamp, read: false });
         logger.warn(`[Consciousness] Hype alert: ${fresh.name} score=${fresh.hypeScore}`, { service: "MarketConsciousness" });
+        
+        // 🆕 COMPARTILHA COM LEARNING BRAIN
+        this._shareInsight("hype_alert",
+          `🚀 ${fresh.name} HYPE DETECTADO! Score ${fresh.hypeScore}`,
+          fresh.hypeScore / 100,
+          { symbol: sym, hypeScore: fresh.hypeScore, volumeChange: fresh.volumeChange }
+        );
       }
     });
     return alerts;
   }
-
-  // ─── Weekly report (integrado com AIZtronLearningService) ────────────────────
 
   _buildWeeklyReport() {
     try {
@@ -298,7 +370,7 @@ class MarketConsciousnessService {
       
       logger.info(`[Consciousness] Report: WR=${winRate}%, DD=${maxDrawdown.toFixed(2)}%, Grade=${grade}, Good=${weAreGood}`, { service: "MarketConsciousness" });
       
-      return {
+      const report = {
         weeklyWinRate: winRate,
         maxDrawdown: +maxDrawdown.toFixed(2),
         totalPnl: +totalPnl.toFixed(2),
@@ -313,6 +385,15 @@ class MarketConsciousnessService {
         aiVerdict: weAreGood ? "SIM ✅" : "NÃO ⚠️",
         generatedAt: new Date().toISOString(),
       };
+      
+      // 🆕 COMPARTILHA COM LEARNING BRAIN
+      this._shareInsight("weekly_report",
+        `Relatório semanal: WR ${winRate}%, DD ${maxDrawdown.toFixed(2)}%, Grade ${grade}, Good=${weAreGood}`,
+        winRate / 100,
+        { winRate, maxDrawdown, grade, weAreGood }
+      );
+      
+      return report;
     } catch (error) {
       logger.error(`[Consciousness] Error building report: ${error.message}`, { service: "MarketConsciousness" });
       return {
@@ -337,7 +418,7 @@ class MarketConsciousnessService {
     const now = Date.now();
     if (this._lastCheck && now - this._lastCheck < 60_000) return;
     this._lastCheck = now;
-    if (!this._manuallyPaused) this._autoEvaluate();
+    if (!this._manuallyPaused && this.config.autoStudyEnabled) this._autoEvaluate();
     this._updateMemecoins();
   }
 
@@ -358,18 +439,32 @@ class MarketConsciousnessService {
       this._weeklyReport = this._buildWeeklyReport();
       const { weeklyWinRate, maxDrawdown } = this._weeklyReport;
 
-      if ((weeklyWinRate < 45 || maxDrawdown > 8) && this._mode === "OPERATING") {
+      if ((weeklyWinRate < this.config.winRateThreshold || maxDrawdown > this.config.drawdownThreshold) && this._mode === "OPERATING") {
         this._mode = "STUDY";
         this._studyStarted = new Date().toISOString();
-        this._pauseReason = weeklyWinRate < 45 ? `Win rate baixo: ${weeklyWinRate}%` : `Drawdown excessivo: ${maxDrawdown}%`;
+        this._pauseReason = weeklyWinRate < this.config.winRateThreshold ? `Win rate baixo: ${weeklyWinRate}%` : `Drawdown excessivo: ${maxDrawdown}%`;
         logger.warn(`[Consciousness] MODO ESTUDO — ${this._pauseReason}`, { service: "MarketConsciousness" });
         eventBus.emit("alert", { id: `cs_${Date.now()}`, type: "WARNING", message: `MODO ESTUDO ativado: ${this._pauseReason}`, timestamp: new Date().toISOString(), read: false });
+        
+        // 🆕 COMPARTILHA COM LEARNING BRAIN
+        this._shareInsight("mode_change",
+          `Mudança para MODO ESTUDO: ${this._pauseReason}`,
+          0.9,
+          { from: "OPERATING", to: "STUDY", reason: this._pauseReason, winRate: weeklyWinRate, drawdown: maxDrawdown }
+        );
       } else if (weeklyWinRate >= 55 && maxDrawdown < 8 && this._mode === "STUDY") {
         this._mode = "OPERATING";
         this._studyStarted = null;
         this._pauseReason = null;
         logger.info(`[Consciousness] Retomando OPERAÇÕES — WR: ${weeklyWinRate}%`, { service: "MarketConsciousness" });
         eventBus.emit("alert", { id: `cs_${Date.now()}`, type: "INFO", message: `OPERAÇÕES retomadas: WR=${weeklyWinRate}%`, timestamp: new Date().toISOString(), read: false });
+        
+        // 🆕 COMPARTILHA COM LEARNING BRAIN
+        this._shareInsight("mode_change",
+          `Retorno ao MODO OPERAÇÕES: WR ${weeklyWinRate}%`,
+          0.9,
+          { from: "STUDY", to: "OPERATING", winRate: weeklyWinRate, drawdown: maxDrawdown }
+        );
       }
     } catch (e) {
       logger.error(`[Consciousness] autoEvaluate error: ${e.message}`, { service: "MarketConsciousness" });
@@ -403,7 +498,6 @@ class MarketConsciousnessService {
     return { status: this.getConsciousnessStatus(), performance: this.getWeeklyPerformance(), memecoins: Object.values(this._memecoins) };
   }
 
-  // ─── NOVO: Retorna relatório diário atual ───────────────────────────────────
   getDailyReport() {
     if (this._dailyReports.length === 0) {
       return this._generateDailyReport();
@@ -411,14 +505,13 @@ class MarketConsciousnessService {
     return this._dailyReports[0];
   }
 
-  // ─── NOVO: Retorna histórico de relatórios diários ──────────────────────────
   getDailyHistory(limit = 7) {
     return this._dailyReports.slice(0, limit);
   }
 
   shouldPauseTrading() {
     const perf = this.getWeeklyPerformance();
-    return perf.weeklyWinRate < 45 || perf.maxDrawdown > 8;
+    return perf.weeklyWinRate < this.config.winRateThreshold || perf.maxDrawdown > this.config.drawdownThreshold;
   }
 
   pauseTrading(reason = "Manual") {
@@ -427,6 +520,13 @@ class MarketConsciousnessService {
     this._pauseReason = reason;
     logger.warn(`[Consciousness] PAUSADO — ${reason}`, { service: "MarketConsciousness" });
     eventBus.emit("alert", { id: `cs_${Date.now()}`, type: "WARNING", message: `Operações pausadas: ${reason}`, timestamp: new Date().toISOString(), read: false });
+    
+    this._shareInsight("mode_change",
+      `Operações PAUSADAS: ${reason}`,
+      0.95,
+      { from: this._mode, to: "PAUSED", reason: reason }
+    );
+    
     return { success: true, mode: this._mode, reason };
   }
 
@@ -436,6 +536,13 @@ class MarketConsciousnessService {
     this._pauseReason = null;
     logger.info(`[Consciousness] RETOMADO`, { service: "MarketConsciousness" });
     eventBus.emit("alert", { id: `cs_${Date.now()}`, type: "INFO", message: "Operações retomadas manualmente", timestamp: new Date().toISOString(), read: false });
+    
+    this._shareInsight("mode_change",
+      `Operações RETOMADAS manualmente`,
+      0.9,
+      { from: "PAUSED", to: "OPERATING" }
+    );
+    
     return { success: true, mode: this._mode };
   }
 
@@ -463,7 +570,30 @@ class MarketConsciousnessService {
       .map(c => ({ ...c, alertType: "HYPE_IMMINENT", detectedAt: new Date().toISOString() }));
   }
 
-  getHypeAlerts() { return this._hypeAlerts; }
+  getHypeAlerts() { 
+    return this._hypeAlerts; 
+  }
+  
+  // 🆕 OBTÉM STATUS COMPLETO
+  getStatus() {
+    return {
+      running: this.isRunning,
+      mode: this._mode,
+      manuallyPaused: this._manuallyPaused,
+      config: this.config,
+      dailyReportsCount: this._dailyReports.length,
+      memecoinsTracked: Object.keys(this._memecoins).length,
+      hypeAlertsCount: this._hypeAlerts.length,
+      agentId: this.agentId
+    };
+  }
+  
+  // 🆕 ATUALIZA CONFIGURAÇÃO
+  updateConfig(newConfig) {
+    this.config = { ...this.config, ...newConfig };
+    logger.info("MarketConsciousnessService config updated", { service: "MarketConsciousness", config: this.config });
+    return { success: true, config: this.config };
+  }
 }
 
 module.exports = new MarketConsciousnessService();
