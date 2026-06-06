@@ -25,7 +25,7 @@ class TradeExecutorService {
       date: new Date().toDateString()
     };
     
-    // 🆕 MAPEAMENTO DE AGENTES (qual robô enviou o sinal)
+    // 🆕 MAPEAMENTO DE AGENTES
     this.agentMapping = {
       "CONSENSUS_MACD": "trend",
       "CONSENSUS_RSI Strategy": "trend",
@@ -42,7 +42,7 @@ class TradeExecutorService {
       await this.handleSignal(signal);
     });
     
-    // 🆕 ESCUTA DECISÕES DO CONSELHO (se implementado)
+    // 🆕 ESCUTA DECISÕES DO CONSELHO
     eventBus.on("council:decision", async (decision) => {
       if (decision && decision.action !== "HOLD") {
         logger.info(`🏛️ Conselho decidiu: ${decision.action} (força: ${(decision.strength*100).toFixed(0)}%)`, { service: "TradeExecutor" });
@@ -54,14 +54,15 @@ class TradeExecutorService {
       openTradesCount: this.openTrades.length,
       version: "v5.0.0"
     });
+    
+    // 🔥🔥🔥 FORÇA O START DO TRADE EXECUTOR 🔥🔥🔥
+    this.start();
   }
 
-  // 🆕 HANDLE SIGNAL - NOVA LÓGICA INTEGRADA
   async handleSignal(signal) {
     if (!this.running || this.paused) return;
     if (signal.status !== "ACTIVE") return;
     
-    // Verifica se é final de semana (opcional)
     if (this._isWeekend() && signal.agent !== "hft") {
       logger.debug(`Ignorando sinal de ${signal.agent} no fim de semana`, { service: "TradeExecutor" });
       return;
@@ -72,10 +73,8 @@ class TradeExecutorService {
       agent: signal.agent || this._getAgentFromStrategy(signal.strategy)
     });
     
-    // Determina o agente responsável
     const agent = signal.agent || this._getAgentFromStrategy(signal.strategy);
     
-    // 🆕 PASSO 1: PREDIT COM LEARNING BRAIN
     let prediction = null;
     if (learningBrain && learningBrain.predictSignal) {
       prediction = learningBrain.predictSignal({
@@ -97,7 +96,6 @@ class TradeExecutorService {
       }
     }
     
-    // 🆕 PASSO 2: EXECUTA O TRADE
     const result = await this.executeTrade({
       symbol: signal.symbol,
       side: signal.type,
@@ -114,19 +112,15 @@ class TradeExecutorService {
     }
   }
 
-  // 🆕 IDENTIFICA O AGENTE PELA ESTRATÉGIA
   _getAgentFromStrategy(strategy) {
     if (!strategy) return "trend";
-    
     if (strategy.includes("HFT")) return "hft";
     if (strategy.includes("ARBITRAGE")) return "arbitrage";
     if (strategy.includes("DEEP")) return "deep";
     if (strategy.includes("SENTIMENT")) return "sentiment";
-    
     return "trend";
   }
 
-  // 🆕 VERIFICA SE É FIM DE SEMANA
   _isWeekend() {
     const day = new Date().getDay();
     return day === 0 || day === 6;
@@ -135,7 +129,7 @@ class TradeExecutorService {
   start() { 
     this.running = true; 
     this._monitorOpenTrades();
-    logger.info("TradeExecutorService started", { service: "TradeExecutor" });
+    logger.info("🚀 TradeExecutorService started - AGORA VAI EXECUTAR TRADES!", { service: "TradeExecutor" });
     return { success: true };
   }
   
@@ -159,7 +153,6 @@ class TradeExecutorService {
 
   isPaused() { return this.paused; }
 
-  // 🆕 EXECUTA TRADE COM INTEGRAÇÃO TOTAL
   async executeTrade({ symbol, side, strategy, confidence, agent, prediction }) {
     if (!this.running) return { success: false, reason: "Engine stopped" };
     if (this.paused) return { success: false, reason: "Trading paused" };
@@ -168,18 +161,15 @@ class TradeExecutorService {
     if (!ticker) return { success: false, reason: "No ticker data" };
 
     const cfg = db.getConfig();
-    const positionInfo = risk.calculatePositionSize(symbol, ticker.price, cfg.stopLoss);
+    const positionInfo = risk.calculatePositionSize(symbol, ticker.price, cfg.stopLoss, agent, confidence);
     
-    // Verifica se quantidade é válida
     if (!positionInfo.qty || positionInfo.qty <= 0) {
       logger.warn(`❌ Invalid quantity: ${positionInfo.qty} for ${symbol}`, { service: "TradeExecutor" });
       return { success: false, reason: "Invalid quantity" };
     }
     
-    // Calcula custo estimado
     const estimatedCost = positionInfo.qty * ticker.price;
     
-    // 🆕 PASSO 3: SOLICITA CAPITAL AO CAPITAL DISTRIBUTOR
     const capitalRequest = await this._requestCapital(agent, estimatedCost, `Trade: ${side} ${symbol}`);
     
     if (!capitalRequest.success) {
@@ -187,15 +177,12 @@ class TradeExecutorService {
       return { success: false, reason: capitalRequest.reason };
     }
     
-    // Valida risco
-    const validation = risk.validateTrade(symbol, side, estimatedCost);
+    const validation = risk.validateTrade(symbol, side, estimatedCost, agent);
     if (!validation.approved) {
-      // Devolve capital reservado
       this._returnCapital(agent, estimatedCost, `Validation failed: ${validation.errors.join("; ")}`);
       return { success: false, reason: validation.errors.join("; ") };
     }
 
-    // Estima slippage
     const slip = slippage.estimate(symbol, side, positionInfo.qty);
     if (!slip.acceptable) {
       this._returnCapital(agent, estimatedCost, `Slippage too high: ${slip.estimated}%`);
@@ -203,14 +190,10 @@ class TradeExecutorService {
     }
 
     try {
-      // 🆕 AJUSTA STOP LOSS BASEADO NO INSIGHT DO LEARNING BRAIN
       let stopLossPercent = cfg.stopLoss;
-      if (prediction && prediction.confidence) {
-        // Se o LearningBrain tem alta confiança, reduz stop loss
-        if (prediction.confidence > 80) {
-          stopLossPercent = cfg.stopLoss * 0.8;
-          logger.info(`🎯 Stop loss reduzido para ${stopLossPercent}% devido à alta confiança do LearningBrain`, { service: "TradeExecutor" });
-        }
+      if (prediction && prediction.confidence && prediction.confidence > 80) {
+        stopLossPercent = cfg.stopLoss * 0.8;
+        logger.info(`🎯 Stop loss reduzido para ${stopLossPercent}% devido à alta confiança do LearningBrain`, { service: "TradeExecutor" });
       }
       
       const stopPrice = side === "BUY" 
@@ -221,8 +204,7 @@ class TradeExecutorService {
         ? ticker.price * (1 + cfg.takeProfit / 100)
         : ticker.price * (1 - cfg.takeProfit / 100);
       
-      // Executa a ordem
-      const order = await exchange.placeOrder(symbol, side, positionInfo.qty, ticker.price);
+      const order = await exchange.placeOrder(symbol, side, positionInfo.qty, ticker.price, agent);
       
       const trade = {
         id: `trade_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -253,29 +235,24 @@ class TradeExecutorService {
       eventBus.emit("trade", { action: "OPEN", trade });
       eventBus.emit("trade:opened", trade);
       
-      logger.info(`Trade opened: ${side} ${positionInfo.qty.toFixed(6)} ${symbol} @ $${order.price.toFixed(2)} (agent: ${agent})`, { 
+      logger.info(`✅ Trade opened: ${side} ${positionInfo.qty.toFixed(6)} ${symbol} @ $${order.price.toFixed(2)} (agent: ${agent})`, { 
         service: "TradeExecutor",
         tradeId: trade.id,
         agent: agent,
         confidence: confidence
       });
       
-      // Atualiza estatísticas diárias
       this.dailyStats.totalTrades++;
       
       return { success: true, trade };
       
     } catch (err) {
       logger.error(`Trade execution failed: ${err.message}`, { service: "TradeExecutor" });
-      
-      // Devolve capital em caso de erro
       this._returnCapital(agent, estimatedCost, `Execution error: ${err.message}`);
-      
       return { success: false, reason: err.message };
     }
   }
 
-  // 🆕 SOLICITA CAPITAL AO CAPITAL DISTRIBUTOR
   async _requestCapital(agent, amount, reason) {
     return new Promise((resolve) => {
       capitalDistributor.handleRequest({
@@ -287,7 +264,6 @@ class TradeExecutorService {
     });
   }
 
-  // 🆕 DEVOLVE CAPITAL AO CAPITAL DISTRIBUTOR
   _returnCapital(agent, amount, reason) {
     eventBus.emit("capital:return", {
       agentId: agent,
@@ -296,7 +272,6 @@ class TradeExecutorService {
     });
   }
 
-  // 🆕 MONITORA TRADES ABERTOS
   _monitorOpenTrades() {
     setInterval(() => {
       if (!this.running) return;
@@ -317,7 +292,6 @@ class TradeExecutorService {
         trade.pnl = Math.round(pnl * 100) / 100;
         trade.pnlPct = Math.round(pnlPct * 100) / 100;
         
-        // Verifica stop loss e take profit
         const hitSL = side === "BUY" 
           ? currentPrice <= trade.stopLoss 
           : currentPrice >= trade.stopLoss;
@@ -337,24 +311,20 @@ class TradeExecutorService {
           
           db.addTrade(trade);
           
-          // Atualiza estatísticas diárias
           if (trade.pnl > 0) {
             this.dailyStats.wins++;
             this.dailyStats.totalProfit += trade.pnl;
             
-            // Processa lucro no tokenomics
             if (tokenomics && tokenomics.processProfit) {
               tokenomics.processProfit(trade.pnl);
             }
             
-            // 🆕 COMUNICA LUCRO PARA O CAPITAL DISTRIBUTOR
             eventBus.emit("agent:profit", {
               agentId: trade.agent,
               amount: trade.pnl,
               tradeId: trade.id
             });
             
-            // 🆕 COMUNICA TRADE FECHADO PARA O LEARNING BRAIN
             eventBus.emit("trade:closed", {
               agent: trade.agent,
               profit: trade.pnl,
@@ -362,17 +332,11 @@ class TradeExecutorService {
               trade: trade
             });
             
-            logger.info(`💰 Trade WIN: ${trade.symbol} PnL: $${trade.pnl} (${trade.pnlPct}%) - agent: ${trade.agent}`, { 
-              service: "TradeExecutor",
-              tradeId: trade.id,
-              agent: trade.agent,
-              profit: trade.pnl
-            });
+            logger.info(`💰 WIN: ${trade.symbol} +$${trade.pnl} (${trade.pnlPct}%) - ${trade.agent}`, { service: "TradeExecutor" });
           } else {
             this.dailyStats.losses++;
             this.dailyStats.totalLoss += Math.abs(trade.pnl);
             
-            // 🆕 COMUNICA PERDA PARA O LEARNING BRAIN
             eventBus.emit("trade:closed", {
               agent: trade.agent,
               loss: Math.abs(trade.pnl),
@@ -380,15 +344,9 @@ class TradeExecutorService {
               trade: trade
             });
             
-            logger.warn(`❌ Trade LOSS: ${trade.symbol} PnL: $${trade.pnl} (${trade.pnlPct}%) - agent: ${trade.agent}`, { 
-              service: "TradeExecutor",
-              tradeId: trade.id,
-              agent: trade.agent,
-              loss: trade.pnl
-            });
+            logger.warn(`❌ LOSS: ${trade.symbol} $${trade.pnl} (${trade.pnlPct}%) - ${trade.agent}`, { service: "TradeExecutor" });
           }
           
-          // 🆕 DEVOLVE CAPITAL (descontando lucro/perda)
           const netResult = trade.pnl;
           if (netResult !== 0) {
             this._returnCapital(trade.agent, netResult, `Trade closed: ${trade.result}`);
@@ -400,7 +358,6 @@ class TradeExecutorService {
     }, 5000);
   }
 
-  // 🆕 RESETA ESTATÍSTICAS DIÁRIAS
   resetDailyStats() {
     const today = new Date().toDateString();
     if (this.dailyStats.date !== today) {
@@ -427,7 +384,6 @@ class TradeExecutorService {
     return this.tradeHistory.slice(0, limit);
   }
   
-  // 🆕 OBTÉM ESTATÍSTICAS COMPLETAS
   getStats() {
     this.resetDailyStats();
     
@@ -457,7 +413,6 @@ class TradeExecutorService {
     };
   }
   
-  // 🆕 ESTATÍSTICAS POR AGENTE
   _getStatsByAgent(trades) {
     const byAgent = {};
     
@@ -482,10 +437,8 @@ class TradeExecutorService {
     return byAgent;
   }
   
-  // 🆕 MÉTODO PARA MIGRAR PARA LIVE
   async switchToLiveMode() {
     logger.info("🔄 TradeExecutor migrando para LIVE MODE...", { service: "TradeExecutor" });
-    // Verifica se tem capital real
     const result = await capitalDistributor.switchToLiveMode();
     
     if (result.success) {
