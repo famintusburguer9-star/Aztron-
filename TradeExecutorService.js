@@ -16,6 +16,19 @@ class TradeExecutorService {
     this.paused = false;
     this.openTrades = db.getTrades({ status: "OPEN" });
     this.tradeHistory = [];
+    
+    // 🆕 FILA DE SINAIS PENDENTES (para quando não tem saldo)
+    this.pendingSignals = [];
+    
+    // 🆕 HISTÓRICO DE PERFORMANCE POR AGENTE
+    this.agentPerformance = {
+      trend: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0 },
+      hft: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0 },
+      arbitrage: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0 },
+      deep: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0 },
+      sentiment: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0 }
+    };
+    
     this.dailyStats = {
       totalTrades: 0,
       wins: 0,
@@ -43,6 +56,12 @@ class TradeExecutorService {
       await this.handleSignal(signal);
     });
     
+    // 🆕 ESCUTA QUANDO CAPITAL VOLTA (para processar fila)
+    eventBus.on("capital:return", (capitalReturn) => {
+      logger.info(`💸 Capital retornou para ${capitalReturn.agentId}: $${capitalReturn.amount}`, { service: "TradeExecutor" });
+      this._processPendingSignals(capitalReturn.agentId);
+    });
+    
     // 🆕 ESCUTA DECISÕES DO CONSELHO
     eventBus.on("council:decision", async (decision) => {
       if (decision && decision.action !== "HOLD") {
@@ -53,7 +72,7 @@ class TradeExecutorService {
     logger.info("TradeExecutorService initialized", { 
       service: "TradeExecutor",
       openTradesCount: this.openTrades.length,
-      version: "v5.0.0"
+      version: "v5.1.0"
     });
     
     // 🔥🔥🔥 FORÇA O START DO TRADE EXECUTOR 🔥🔥🔥
@@ -62,7 +81,6 @@ class TradeExecutorService {
   }
 
   async handleSignal(signal) {
-    // 🔥 LOG DE DEBUG
     logger.info(`🔍 DEBUG: handleSignal chamado! running=${this.running}, paused=${this.paused}`, { service: "TradeExecutor" });
     
     if (!this.running || this.paused) {
@@ -82,29 +100,6 @@ class TradeExecutorService {
     
     const agent = signal.agent || this._getAgentFromStrategy(signal.strategy);
     
-    // 🔥🔥🔥 BLOQUEIO DO LEARNING BRAIN REMOVIDO 🔥🔥🔥
-    // let prediction = null;
-    // if (learningBrain && learningBrain.predictSignal) {
-    //   prediction = learningBrain.predictSignal({
-    //     symbol: signal.symbol,
-    //     type: signal.type,
-    //     confidence: signal.confidence,
-    //     strategy: signal.strategy,
-    //     agent: agent
-    //   });
-    //   
-    //   if (prediction && prediction.recommendation === "SKIP") {
-    //     logger.info(`⏭️ LearningBrain recomendou pular: ${prediction.patternUsed || "no pattern"}`, { service: "TradeExecutor" });
-    //     return;
-    //   }
-    //   
-    //   if (prediction && prediction.recommendation === "WAIT") {
-    //     logger.info(`⏸️ LearningBrain recomendou aguardar`, { service: "TradeExecutor" });
-    //     return;
-    //   }
-    // }
-    
-    // 🔥 PREDICTION SEMPRE NULL - NÃO BLOQUEIA
     const result = await this.executeTrade({
       symbol: signal.symbol,
       side: signal.type,
@@ -118,6 +113,21 @@ class TradeExecutorService {
       logger.info(`✅ Trade executed: ${signal.type} ${signal.symbol} (agent: ${agent})`, { service: "TradeExecutor" });
     } else {
       logger.warn(`❌ Trade failed: ${result.reason}`, { service: "TradeExecutor" });
+      
+      // 🔥 SE FOI FALTA DE SALDO, GUARDA NA FILA
+      if (result.reason === "INSUFFICIENT_BALANCE" || (result.reason && result.reason.includes("saldo"))) {
+        this.pendingSignals.push({
+          symbol: signal.symbol,
+          side: signal.type,
+          strategy: signal.strategy,
+          confidence: signal.confidence,
+          agent: agent,
+          prediction: null,
+          timestamp: Date.now(),
+          originalSignal: signal
+        });
+        logger.info(`📥 Signal enfileirado para ${agent} (falta saldo). Total pendentes: ${this.pendingSignals.length}`, { service: "TradeExecutor" });
+      }
     }
   }
 
@@ -184,7 +194,36 @@ class TradeExecutorService {
     }
 
     const cfg = db.getConfig();
-    const positionInfo = risk.calculatePositionSize(symbol, ticker.price, cfg.stopLoss, agent, confidence);
+    
+    // 🆕 AJUSTA POSITION SIZE BASEADO NA SEQUÊNCIA DE LUCROS/PREJUÍZOS
+    const performance = this.agentPerformance[agent] || { consecutiveWins: 0, consecutiveLosses: 0 };
+    let adjustedConfidence = confidence;
+    let sizeMultiplier = 1.0;
+    
+    if (performance.consecutiveWins >= 3) {
+      // Sequência de lucros: aumenta confiança e tamanho
+      sizeMultiplier = Math.min(1.5, 1 + (performance.consecutiveWins * 0.1));
+      adjustedConfidence = Math.min(98, confidence + (performance.consecutiveWins * 2));
+      logger.info(`📈 ${agent} em sequência de ${performance.consecutiveWins} lucros! Multiplicador: ${sizeMultiplier}x, Confiança ajustada: ${adjustedConfidence}%`, { service: "TradeExecutor" });
+    } else if (performance.consecutiveLosses >= 2) {
+      // Sequência de prejuízos: reduz risco
+      sizeMultiplier = Math.max(0.5, 1 - (performance.consecutiveLosses * 0.2));
+      adjustedConfidence = Math.max(50, confidence - (performance.consecutiveLosses * 5));
+      logger.info(`📉 ${agent} em sequência de ${performance.consecutiveLosses} prejuízos! Multiplicador: ${sizeMultiplier}x, Confiança ajustada: ${adjustedConfidence}%`, { service: "TradeExecutor" });
+      
+      // Se perdeu 3+ seguidas, pausa o agente por um tempo
+      if (performance.consecutiveLosses >= 3) {
+        logger.warn(`⛔ ${agent} perdeu ${performance.consecutiveLosses} seguidas. Pulando este trade para evitar mais perdas.`, { service: "TradeExecutor" });
+        return { success: false, reason: "CONSECUTIVE_LOSSES_BREAK" };
+      }
+    }
+    
+    const positionInfo = risk.calculatePositionSize(symbol, ticker.price, cfg.stopLoss, agent, adjustedConfidence);
+    
+    // Aplica multiplicador de tamanho baseado na performance
+    if (positionInfo.qty && positionInfo.qty > 0) {
+      positionInfo.qty = positionInfo.qty * sizeMultiplier;
+    }
     
     if (!positionInfo.qty || positionInfo.qty <= 0) {
       logger.warn(`❌ Invalid quantity: ${positionInfo.qty} for ${symbol}`, { service: "TradeExecutor" });
@@ -192,12 +231,18 @@ class TradeExecutorService {
     }
     
     const estimatedCost = positionInfo.qty * ticker.price;
-    logger.info(`🔍 DEBUG: estimatedCost = ${estimatedCost}`, { service: "TradeExecutor" });
+    logger.info(`🔍 DEBUG: estimatedCost = ${estimatedCost} (sizeMultiplier: ${sizeMultiplier}x)`, { service: "TradeExecutor" });
     
     const capitalRequest = await this._requestCapital(agent, estimatedCost, `Trade: ${side} ${symbol}`);
     
     if (!capitalRequest.success) {
       logger.warn(`❌ Trade rejeitado pelo CapitalDistributor: ${capitalRequest.reason}`, { service: "TradeExecutor" });
+      
+      // 🔥 VERIFICA SE FOI FALTA DE SALDO
+      if (capitalRequest.reason === "INSUFFICIENT_BALANCE" || (capitalRequest.reason && capitalRequest.reason.includes("saldo"))) {
+        return { success: false, reason: "INSUFFICIENT_BALANCE" };
+      }
+      
       return { success: false, reason: capitalRequest.reason };
     }
     
@@ -215,9 +260,16 @@ class TradeExecutorService {
 
     try {
       let stopLossPercent = cfg.stopLoss;
-      if (prediction && prediction.confidence && prediction.confidence > 80) {
-        stopLossPercent = cfg.stopLoss * 0.8;
-        logger.info(`🎯 Stop loss reduzido para ${stopLossPercent}% devido à alta confiança do LearningBrain`, { service: "TradeExecutor" });
+      
+      // 🆕 AJUSTA STOP LOSS BASEADO NA PERFORMANCE
+      if (performance.consecutiveWins >= 2) {
+        // Mais confiante: stop mais apertado (protege lucro)
+        stopLossPercent = cfg.stopLoss * 0.7;
+        logger.info(`🎯 Stop loss reduzido para ${stopLossPercent}% (sequência de lucros)`, { service: "TradeExecutor" });
+      } else if (performance.consecutiveLosses >= 2) {
+        // Menos confiante: stop mais largo (dá mais espaço)
+        stopLossPercent = cfg.stopLoss * 1.3;
+        logger.info(`🎯 Stop loss aumentado para ${stopLossPercent}% (sequência de prejuízos)`, { service: "TradeExecutor" });
       }
       
       const stopPrice = side === "BUY" 
@@ -237,7 +289,7 @@ class TradeExecutorService {
         side,
         strategy: strategy || "unknown",
         agent: agent,
-        confidence: confidence || 70,
+        confidence: adjustedConfidence,
         status: "OPEN",
         entryPrice: order.price,
         exitPrice: null,
@@ -249,6 +301,7 @@ class TradeExecutorService {
         takeProfit: takeProfitPrice,
         stopLossPercent: stopLossPercent,
         takeProfitPercent: cfg.takeProfit,
+        sizeMultiplier: sizeMultiplier,
         predictionUsed: prediction?.patternUsed || null,
         timestamp: new Date().toISOString(),
         orderId: order.orderId,
@@ -264,7 +317,8 @@ class TradeExecutorService {
         service: "TradeExecutor",
         tradeId: trade.id,
         agent: agent,
-        confidence: confidence
+        confidence: adjustedConfidence,
+        sizeMultiplier: sizeMultiplier
       });
       
       this.dailyStats.totalTrades++;
@@ -297,6 +351,84 @@ class TradeExecutorService {
       amount: amount,
       reason: reason
     });
+  }
+
+  // 🆕 PROCESSA SINAIS PENDENTES (chamado quando capital volta)
+  _processPendingSignals(agentId) {
+    const toProcess = this.pendingSignals.filter(s => s.agent === agentId);
+    if (toProcess.length === 0) return;
+    
+    logger.info(`🔄 Processando ${toProcess.length} sinais pendentes para ${agentId}`, { service: "TradeExecutor" });
+    
+    // Remove da fila os que vamos processar
+    this.pendingSignals = this.pendingSignals.filter(s => s.agent !== agentId);
+    
+    // Tenta executar cada um
+    for (const signal of toProcess) {
+      logger.info(`🔄 Tentando sinal pendente: ${signal.side} ${signal.symbol} para ${agentId}`, { service: "TradeExecutor" });
+      this.executeTrade({
+        symbol: signal.symbol,
+        side: signal.side,
+        strategy: signal.strategy,
+        confidence: signal.confidence,
+        agent: signal.agent,
+        prediction: signal.prediction
+      }).then(result => {
+        if (result.success) {
+          logger.info(`✅ Sinal pendente executado com sucesso: ${signal.side} ${signal.symbol}`, { service: "TradeExecutor" });
+        } else if (result.reason === "INSUFFICIENT_BALANCE") {
+          // Se ainda falta saldo, recoloca na fila
+          this.pendingSignals.push(signal);
+          logger.info(`📥 Sinal pendente recolocado na fila para ${agentId} (saldo ainda insuficiente)`, { service: "TradeExecutor" });
+        } else {
+          logger.warn(`❌ Sinal pendente falhou: ${result.reason}`, { service: "TradeExecutor" });
+        }
+      });
+    }
+  }
+
+  // 🆕 ATUALIZA PERFORMANCE DO AGENTE BASEADO NO RESULTADO DO TRADE
+  _updateAgentPerformance(agent, isWin, pnl) {
+    if (!this.agentPerformance[agent]) {
+      this.agentPerformance[agent] = { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0 };
+    }
+    
+    const perf = this.agentPerformance[agent];
+    
+    if (isWin) {
+      perf.consecutiveWins++;
+      perf.consecutiveLosses = 0;
+      perf.totalWins++;
+      perf.lastResult = "WIN";
+      logger.info(`🏆 ${agent} - Vitória #${perf.consecutiveWins} consecutiva! Lucro: $${pnl.toFixed(2)}`, { service: "TradeExecutor" });
+      
+      // Bônus de confiança para próximos trades
+      if (perf.consecutiveWins >= 3) {
+        logger.info(`✨ ${agent} está EM FASE! ${perf.consecutiveWins} vitórias seguidas. Recomendado: aumentar tamanho das posições.`, { service: "TradeExecutor" });
+        eventBus.emit("agent:hotStreak", { agentId: agent, streak: perf.consecutiveWins });
+      }
+    } else {
+      perf.consecutiveLosses++;
+      perf.consecutiveWins = 0;
+      perf.totalLosses++;
+      perf.lastResult = "LOSS";
+      logger.warn(`😞 ${agent} - Derrota #${perf.consecutiveLosses} consecutiva! Prejuízo: $${Math.abs(pnl).toFixed(2)}`, { service: "TradeExecutor" });
+      
+      // Alerta de queda
+      if (perf.consecutiveLosses >= 3) {
+        logger.error(`🚨 ${agent} em queda livre! ${perf.consecutiveLosses} derrotas seguidas. Recomendado: pausar ou reduzir risco.`, { service: "TradeExecutor" });
+        eventBus.emit("agent:coldStreak", { agentId: agent, streak: perf.consecutiveLosses });
+      }
+    }
+    
+    // Calcula win rate geral
+    const totalTrades = perf.totalWins + perf.totalLosses;
+    perf.winRate = totalTrades > 0 ? (perf.totalWins / totalTrades) * 100 : 0;
+    
+    // Salva no banco para persistência
+    db.updateAgentPerformance(agent, perf);
+    
+    return perf;
   }
 
   _monitorOpenTrades() {
@@ -339,6 +471,10 @@ class TradeExecutorService {
           
           db.addTrade(trade);
           
+          // 🆕 ATUALIZA PERFORMANCE DO AGENTE
+          const isWin = trade.result === "WIN";
+          this._updateAgentPerformance(trade.agent, isWin, trade.pnl);
+          
           if (trade.pnl > 0) {
             this.dailyStats.wins++;
             this.dailyStats.totalProfit += trade.pnl;
@@ -360,7 +496,7 @@ class TradeExecutorService {
               trade: trade
             });
             
-            logger.info(`💰 WIN: ${trade.symbol} +$${trade.pnl} (${trade.pnlPct}%) - ${trade.agent}`, { service: "TradeExecutor" });
+            logger.info(`💰 WIN: ${trade.symbol} +$${trade.pnl.toFixed(2)} (${trade.pnlPct.toFixed(2)}%) - ${trade.agent}`, { service: "TradeExecutor" });
           } else {
             this.dailyStats.losses++;
             this.dailyStats.totalLoss += Math.abs(trade.pnl);
@@ -372,7 +508,7 @@ class TradeExecutorService {
               trade: trade
             });
             
-            logger.warn(`❌ LOSS: ${trade.symbol} $${trade.pnl} (${trade.pnlPct}%) - ${trade.agent}`, { service: "TradeExecutor" });
+            logger.warn(`❌ LOSS: ${trade.symbol} $${trade.pnl.toFixed(2)} (${trade.pnlPct.toFixed(2)}%) - ${trade.agent}`, { service: "TradeExecutor" });
           }
           
           const netResult = trade.pnl;
@@ -437,7 +573,8 @@ class TradeExecutorService {
         count: this.openTrades.length,
         totalPnl: this.getTotalOpenPnl()
       },
-      byAgent: this._getStatsByAgent(allClosedTrades)
+      byAgent: this._getStatsByAgent(allClosedTrades),
+      agentPerformance: this.agentPerformance  // 🆕 EXPÕE PERFORMANCE POR AGENTE
     };
   }
   
@@ -463,6 +600,27 @@ class TradeExecutorService {
     }
     
     return byAgent;
+  }
+  
+  // 🆕 MÉTODO PARA RESETAR PERFORMANCE DE UM AGENTE
+  resetAgentPerformance(agent) {
+    if (this.agentPerformance[agent]) {
+      this.agentPerformance[agent] = {
+        consecutiveWins: 0,
+        consecutiveLosses: 0,
+        lastResult: null,
+        totalWins: 0,
+        totalLosses: 0,
+        winRate: 0
+      };
+      logger.info(`🔄 Performance do agente ${agent} foi resetada`, { service: "TradeExecutor" });
+    }
+    return { success: true };
+  }
+  
+  // 🆕 MÉTODO PARA VER PERFORMANCE DE UM AGENTE
+  getAgentPerformance(agent) {
+    return this.agentPerformance[agent] || { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null };
   }
   
   async switchToLiveMode() {
