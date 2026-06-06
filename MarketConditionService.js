@@ -1,20 +1,93 @@
 const marketData = require("./MarketDataService");
 const logger = require("./LoggerService");
+const eventBus = require("./EventBus");
 
 class MarketConditionService {
   constructor() {
     this.conditions = {};
-    this.advancedConditions = {}; // NOVO: para dados avançados
-    this.historicalConditions = []; // NOVO: histórico
+    this.advancedConditions = {};
+    this.historicalConditions = [];
+    this.isRunning = false;
+    
+    // 🆕 IDENTIFICAÇÃO PARA LEARNING BRAIN
+    this.agentId = "market_condition";
+    
+    // 🆕 CONFIGURAÇÕES AJUSTÁVEIS
+    this.config = {
+      adxThresholdTrending: 25,
+      adxThresholdStrong: 40,
+      volatilityThreshold: 1.5,
+      rsiOversold: 30,
+      rsiOverbought: 70,
+      shareInsights: true,
+      autoAdjust: true
+    };
+    
+    // 🆕 ESTATÍSTICAS
+    this.stats = {
+      conditionChanges: 0,
+      lastRegimeChange: null,
+      regimeHistory: []
+    };
+    
+    // 🆕 ESCUTA MELHORIAS DO LEARNING BRAIN
+    eventBus.on("improvement:broadcast", (improvement) => {
+      if (improvement.affectedAgents?.includes(this.agentId)) {
+        this.applyImprovement(improvement);
+      }
+    });
+    
+    eventBus.on(`improvement:${this.agentId}`, (improvement) => {
+      this.applyImprovement(improvement);
+    });
+    
     this._analyze();
     setInterval(() => this._analyze(), 30000);
     logger.info("MarketConditionService initialized", { service: "MarketCondition" });
   }
 
-  // NOVO: Calcula ADX simulado (força da tendência)
+  // 🆕 APLICA MELHORIAS DO LEARNING BRAIN
+  applyImprovement(improvement) {
+    if (!improvement) return;
+    
+    logger.info(`🧠 MarketCondition recebeu melhoria: ${improvement.recommendation}`, { service: "MarketCondition" });
+    
+    switch(improvement.recommendation) {
+      case "AUMENTAR_SENSIBILIDADE":
+        this.config.adxThresholdTrending = Math.max(18, this.config.adxThresholdTrending - 3);
+        this.config.volatilityThreshold = Math.max(0.8, this.config.volatilityThreshold - 0.3);
+        logger.info(`⚡ MarketCondition aumentou sensibilidade: ADX threshold=${this.config.adxThresholdTrending}, volatility=${this.config.volatilityThreshold}`, { service: "MarketCondition" });
+        break;
+        
+      case "REDUZIR_RISCO":
+        this.config.adxThresholdTrending = Math.min(35, this.config.adxThresholdTrending + 5);
+        this.config.volatilityThreshold = Math.min(2.5, this.config.volatilityThreshold + 0.5);
+        logger.info(`📉 MarketCondition reduziu risco: ADX threshold=${this.config.adxThresholdTrending}, volatility=${this.config.volatilityThreshold}`, { service: "MarketCondition" });
+        break;
+    }
+    
+    setTimeout(() => {
+      this.config.adxThresholdTrending = 25;
+      this.config.volatilityThreshold = 1.5;
+      logger.info(`🔄 MarketCondition resetou ajustes`, { service: "MarketCondition" });
+    }, 3600000);
+  }
+
+  // 🆕 COMPARTILHA INSIGHT COM LEARNING BRAIN
+  _shareInsight(type, content, confidence, data = {}) {
+    if (!this.config.shareInsights) return;
+    
+    eventBus.emit(`learning:${this.agentId}`, {
+      type: type,
+      content: content,
+      confidence: Math.min(0.95, confidence),
+      priority: confidence > 0.8 ? "high" : "normal",
+      data: data
+    });
+  }
+
   _calculateADX(symbol, rsi, macdHist) {
-    // Baseado em RSI e MACD para simular força da tendência
-    let adx = 20; // neutro
+    let adx = 20;
     
     if (macdHist > 0) adx += 15;
     else if (macdHist < 0) adx += 15;
@@ -22,7 +95,6 @@ class MarketConditionService {
     
     if (rsi > 60 || rsi < 40) adx += 10;
     
-    // Variação por símbolo
     if (symbol === "BTCUSDT") adx -= 3;
     if (symbol === "ETHUSDT") adx += 2;
     if (symbol === "BNBUSDT") adx += 4;
@@ -30,39 +102,33 @@ class MarketConditionService {
     return Math.min(65, Math.max(12, Math.round(adx)));
   }
 
-  // NOVO: Detecta regime de mercado (trending, ranging, volatile)
   _detectRegime(adx, volatility, rsi) {
-    // Ranging (sideways) - mercado lateral
-    if (adx < 22 && rsi > 35 && rsi < 65) {
+    if (adx < this.config.adxThresholdTrending && rsi > 35 && rsi < 65) {
       return "ranging";
     }
     
-    // Volatile - mercado volátil
     if (volatility === "HIGH") {
       return "volatile";
     }
     
-    // Trending - mercado em tendência
-    if (adx >= 25) {
+    if (adx >= this.config.adxThresholdTrending) {
       return "trending";
     }
     
     return "uncertain";
   }
 
-  // NOVO: Calcula força da tendência
   _calculateTrendStrength(adx) {
-    if (adx >= 40) return "strong";
-    if (adx >= 25) return "moderate";
+    if (adx >= this.config.adxThresholdStrong) return "strong";
+    if (adx >= this.config.adxThresholdTrending) return "moderate";
     return "weak";
   }
 
-  // NOVO: Gera recomendação baseada nas condições
   _generateRecommendation(regime, trend, adx, volatility, tradeable) {
     if (!tradeable) {
       return {
         action: "AVOID",
-        reason: "Market conditions not favorable for trading (spread or volatility issues).",
+        reason: "Market conditions not favorable for trading.",
         positionSize: 0
       };
     }
@@ -79,7 +145,7 @@ class MarketConditionService {
     if (regime === "volatile") {
       return {
         action: "REDUCE",
-        reason: `High volatility (${volatility}). Reduce position sizes.`,
+        reason: `High volatility. Reduce position sizes.`,
         positionSize: 0.5,
         preferredStrategy: "scalping"
       };
@@ -89,7 +155,7 @@ class MarketConditionService {
       let positionSize = 1.0;
       let action = "FOLLOW";
       
-      if (adx >= 40) {
+      if (adx >= this.config.adxThresholdStrong) {
         positionSize = 1.2;
         action = "AGGRESSIVE";
         return {
@@ -119,13 +185,19 @@ class MarketConditionService {
   }
 
   _analyze() {
+    const prevRegimes = {};
+    for (const sym of ["BTCUSDT", "ETHUSDT", "BNBUSDT"]) {
+      if (this.advancedConditions[sym]) {
+        prevRegimes[sym] = this.advancedConditions[sym].regime;
+      }
+    }
+    
     for (const sym of ["BTCUSDT", "ETHUSDT", "BNBUSDT"]) {
       const ind = marketData.getIndicators(sym);
       const rsi = ind.rsi || 50;
       const macdHist = ind.macdHist || 0;
       const spread = ind.spread || 0.1;
 
-      // Trend original (mantido igual)
       let trend = "SIDEWAYS";
       if (ind.emaSignal === "BUY" && rsi < 65 && macdHist > 0) trend = "BULLISH";
       else if (ind.emaSignal === "SELL" && rsi > 35 && macdHist < 0) trend = "BEARISH";
@@ -134,7 +206,6 @@ class MarketConditionService {
       const spreadOk = spread < 0.2;
       const tradeable = spreadOk && volatility !== "HIGH";
       
-      // NOVO: Métricas avançadas
       const adx = this._calculateADX(sym, rsi, macdHist);
       const trendStrength = this._calculateTrendStrength(adx);
       const regime = this._detectRegime(adx, volatility, rsi);
@@ -142,7 +213,6 @@ class MarketConditionService {
       const recommendation = this._generateRecommendation(regime, trend, adx, volatility, tradeable);
       const positionMultiplier = this._getPositionMultiplierFromRecommendation(recommendation);
 
-      // Mantém o objeto original (para compatibilidade)
       this.conditions[sym] = { 
         symbol: sym, 
         trend, 
@@ -154,7 +224,6 @@ class MarketConditionService {
         updatedAt: new Date().toISOString() 
       };
       
-      // NOVO: Dados avançados (não quebra frontend)
       this.advancedConditions[sym] = {
         ...this.conditions[sym],
         adx,
@@ -165,7 +234,29 @@ class MarketConditionService {
         positionMultiplier
       };
       
-      // Guarda histórico
+      // 🆕 DETECTA MUDANÇA DE REGIME
+      const prevRegime = prevRegimes[sym];
+      if (prevRegime && prevRegime !== regime) {
+        this.stats.conditionChanges++;
+        this.stats.lastRegimeChange = new Date().toISOString();
+        
+        this._shareInsight("regime_change",
+          `${sym} mudou de ${prevRegime} para ${regime}`,
+          0.85,
+          { symbol: sym, from: prevRegime, to: regime, adx, trend }
+        );
+        
+        logger.info(`🔄 ${sym} regime change: ${prevRegime} → ${regime}`, { service: "MarketCondition" });
+      }
+      
+      this.stats.regimeHistory.unshift({
+        symbol: sym,
+        regime,
+        adx,
+        timestamp: new Date().toISOString()
+      });
+      if (this.stats.regimeHistory.length > 200) this.stats.regimeHistory.pop();
+      
       this.historicalConditions.unshift({
         symbol: sym,
         trend,
@@ -180,6 +271,16 @@ class MarketConditionService {
       }
     }
     
+    // 🆕 COMPARTILHA RESUMO DO MERCADO
+    const marketStats = this.getMarketStats();
+    if (marketStats && marketStats.totalSymbols > 0) {
+      this._shareInsight("market_summary",
+        `Mercado: ${marketStats.percentTrending}% em tendência, ${marketStats.tradeableCount}/${marketStats.totalSymbols} negociáveis`,
+        marketStats.percentTrending / 100,
+        marketStats
+      );
+    }
+    
     logger.debug(`Market conditions updated`, { 
       service: "MarketCondition",
       conditions: Object.keys(this.conditions).map(s => ({
@@ -191,13 +292,12 @@ class MarketConditionService {
     });
   }
 
-  // NOVO: Multiplicador de posição baseado na recomendação
   _getPositionMultiplierFromRecommendation(recommendation) {
     if (!recommendation) return 1.0;
     return recommendation.positionSize !== undefined ? recommendation.positionSize : 1.0;
   }
 
-  // ─── MÉTODOS ORIGINAIS (mantidos para compatibilidade) ───
+  // ─── MÉTODOS ORIGINAIS ───
   
   getCondition(symbol) { 
     return this.conditions[symbol] || null; 
@@ -220,23 +320,20 @@ class MarketConditionService {
     return { sentiment: "NEUTRAL", score: 50 };
   }
 
-  // ─── NOVOS MÉTODOS (para uso futuro) ───
+  // ─── MÉTODOS AVANÇADOS ───
   
-  // Verifica se mercado está lateral (sideways)
   isSideways(symbol) {
     const adv = this.advancedConditions[symbol];
     if (!adv) return false;
     return adv.isSideways || false;
   }
   
-  // Verifica se está em tendência forte
   isStrongTrend(symbol) {
     const adv = this.advancedConditions[symbol];
     if (!adv) return false;
     return adv.regime === "trending" && adv.trendStrength === "strong";
   }
   
-  // Retorna direção recomendada (LONG/SHORT/NEUTRAL)
   getRecommendedDirection(symbol) {
     const adv = this.advancedConditions[symbol];
     if (!adv) return "NEUTRAL";
@@ -246,24 +343,20 @@ class MarketConditionService {
     return "NEUTRAL";
   }
   
-  // Retorna multiplicador de posição baseado nas condições
   getPositionMultiplier(symbol) {
     const adv = this.advancedConditions[symbol];
     if (!adv) return 1.0;
     return adv.positionMultiplier || 1.0;
   }
   
-  // Retorna análise completa (incluindo dados avançados)
   getFullAnalysis(symbol) {
     return this.advancedConditions[symbol] || this.conditions[symbol] || null;
   }
   
-  // Retorna todas as análises avançadas
   getAllAdvancedConditions() {
     return this.advancedConditions;
   }
   
-  // Retorna histórico de condições
   getHistoricalConditions(symbol, limit = 50) {
     let filtered = this.historicalConditions;
     if (symbol) {
@@ -272,7 +365,6 @@ class MarketConditionService {
     return filtered.slice(0, limit);
   }
   
-  // Retorna estatísticas gerais do mercado
   getMarketStats() {
     const advs = Object.values(this.advancedConditions);
     if (advs.length === 0) return null;
@@ -293,6 +385,41 @@ class MarketConditionService {
       bestRegime: trending > ranging ? "trending" : "ranging",
       timestamp: new Date().toISOString()
     };
+  }
+  
+  // 🆕 OBTÉM STATUS COMPLETO
+  getStatus() {
+    return {
+      running: this.isRunning,
+      config: this.config,
+      stats: {
+        conditionChanges: this.stats.conditionChanges,
+        lastRegimeChange: this.stats.lastRegimeChange,
+        regimeHistorySize: this.stats.regimeHistory.length
+      },
+      historicalSize: this.historicalConditions.length,
+      marketStats: this.getMarketStats(),
+      agentId: this.agentId
+    };
+  }
+  
+  // 🆕 ATUALIZA CONFIGURAÇÃO
+  updateConfig(newConfig) {
+    this.config = { ...this.config, ...newConfig };
+    logger.info("MarketConditionService config updated", { service: "MarketCondition", config: this.config });
+    return { success: true, config: this.config };
+  }
+  
+  start() {
+    this.isRunning = true;
+    logger.info("MarketConditionService started", { service: "MarketCondition" });
+    return { success: true };
+  }
+  
+  stop() {
+    this.isRunning = false;
+    logger.info("MarketConditionService stopped", { service: "MarketCondition" });
+    return { success: true };
   }
 }
 
