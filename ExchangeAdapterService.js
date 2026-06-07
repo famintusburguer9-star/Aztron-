@@ -38,6 +38,10 @@ class ExchangeAdapterService {
     this.prices = {};
     this.tradeHistory = [];
     
+    // 🔥 CONTROLE DE OPORTUNIDADES DE ARBITRAGEM
+    this._lastArbitrageCheck = {};
+    this._arbitrageCooldown = 30000; // 30 segundos entre verificações do mesmo símbolo
+    
     // Inicializa preços
     for (const [symbol, price] of Object.entries(INITIAL_PRICES)) {
       this.prices[symbol] = {
@@ -51,6 +55,7 @@ class ExchangeAdapterService {
         change24h: 0,
         timestamp: Date.now()
       };
+      this._lastArbitrageCheck[symbol] = 0;
     }
     
     this._startRealisticSimulation();
@@ -63,9 +68,6 @@ class ExchangeAdapterService {
     });
   }
 
-  /**
-   * Obtém saldo do agente via CapitalDistributor
-   */
   getAgentBalance(agentId = "trend") {
     const agentInfo = capitalDistributor.getAgentInfo(agentId);
     const balance = agentInfo ? agentInfo.balance : 0;
@@ -149,15 +151,44 @@ class ExchangeAdapterService {
     };
   }
 
+  /**
+   * 🔥 ARBITRAGEM REALISTA - NÃO SOBRECARREGA O SISTEMA
+   */
   async getArbitrageOpportunity(symbol = "BTCUSDT") {
     try {
+      const now = Date.now();
+      
+      // 🔥 COOLDOWN: só verifica a cada 30 segundos por símbolo
+      const lastCheck = this._lastArbitrageCheck[symbol] || 0;
+      if (now - lastCheck < this._arbitrageCooldown) {
+        return null;
+      }
+      this._lastArbitrageCheck[symbol] = now;
+      
       const realPrice = await this.getPrice(symbol);
       if (!realPrice) return null;
       
       const ticker = this.prices[symbol];
-      const volatility = Math.abs(ticker.change24h) / 100;
-      const maxSpread = Math.min(2.0, volatility * 0.5 + 0.3);
-      const simulatedSpread = Math.random() * maxSpread;
+      if (!ticker) return null;
+      
+      // 🔥 VOLATILIDADE REAL (baseada na variação real do preço)
+      const volatility = Math.min(0.8, Math.abs(ticker.change24h) / 100);
+      
+      // 🔥 SPREAD MÁXIMO REALISTA (0.02% a 0.15% - NUNCA MAIS QUE ISSO!)
+      // Isto é o que acontece no mundo real entre exchanges
+      const maxSpread = 0.02 + (volatility * 0.13);
+      
+      // 🔥 SÓ GERA OPORTUNIDADE OCASIONALMENTE (8% das verificações)
+      // No mundo real, oportunidades de arbitragem são raras
+      const shouldGenerate = Math.random() < 0.08;
+      if (!shouldGenerate) return null;
+      
+      // 🔥 SPREAD REALISTA (entre 0.02% e maxSpread)
+      const simulatedSpread = 0.02 + (Math.random() * (maxSpread - 0.02));
+      
+      // 🔥 SÓ EXECUTA SE SPREAD FOR REALMENTE SIGNIFICATIVO (mínimo 0.03%)
+      // Abaixo disso, o lucro é consumido por taxas
+      if (simulatedSpread < 0.03) return null;
       
       const isBinanceHigher = Math.random() > 0.5;
       let binancePrice = realPrice;
@@ -171,6 +202,8 @@ class ExchangeAdapterService {
       
       const buyExchange = binancePrice < bybitPrice ? "BINANCE" : "BYBIT";
       const sellExchange = binancePrice < bybitPrice ? "BYBIT" : "BINANCE";
+
+      logger.debug(`💰 Oportunidade de arbitragem em ${symbol}: spread ${simulatedSpread.toFixed(3)}%`, { service: "ExchangeAdapter" });
 
       return {
         symbol,
@@ -189,9 +222,6 @@ class ExchangeAdapterService {
     }
   }
 
-  /**
-   * 🔥 EXECUTA ORDEM - DEBITA O CAPITAL DO CAPITAL DISTRIBUTOR
-   */
   async placeOrder(symbol, side, qty, price = null, agentId = "trend") {
     if (this.mode === "PAPER") {
       const ticker = this.prices[symbol];
@@ -200,7 +230,6 @@ class ExchangeAdapterService {
       const execPrice = price || ticker.price;
       const cost = execPrice * qty;
       
-      // 🔥 VERIFICA SALDO NO CAPITAL DISTRIBUTOR
       const currentBalance = this.getAgentBalance(agentId);
       
       if (side === "BUY") {
@@ -209,7 +238,6 @@ class ExchangeAdapterService {
         }
       }
       
-      // 🔥🔥🔥 CRÍTICO: RESERVA/DEBITA O CAPITAL DO CAPITAL DISTRIBUTOR
       const capitalResult = await new Promise((resolve) => {
         capitalDistributor.handleRequest({
           agentId: agentId,
@@ -252,9 +280,6 @@ class ExchangeAdapterService {
     throw new Error("Live trading not implemented — configure API keys and set mode to LIVE");
   }
 
-  /**
-   * RETORNA SALDO DO AGENTE (via CapitalDistributor)
-   */
   getBalance(agentId = "trend") {
     return { USDT: this.getAgentBalance(agentId) };
   }
