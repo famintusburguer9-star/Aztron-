@@ -81,6 +81,17 @@ class TradeExecutorService {
       }
     });
     
+    // 🔥 ESCUTA TENDÊNCIA DE MERCADO
+    eventBus.on("market:trend", (trendData) => {
+      this._marketTrend = trendData.trend;
+      this._trendStrength = trendData.strength;
+      logger.debug(`📊 Tendência de mercado atualizada: ${this._marketTrend} (força: ${this._trendStrength.toFixed(1)}%)`, { service: "TradeExecutor" });
+    });
+    
+    // 🔥 TENDÊNCIA ATUAL DO MERCADO
+    this._marketTrend = "sideways";
+    this._trendStrength = 0;
+    
     logger.info("TradeExecutorService initialized", { 
       service: "TradeExecutor",
       openTradesCount: this.openTrades.length,
@@ -100,7 +111,6 @@ class TradeExecutorService {
     
     switch(improvement.recommendation) {
       case "AUMENTAR_TAMANHO_POSICAO":
-        // Aumenta temporariamente o multiplicador de tamanho
         this.tempSizeMultiplier = Math.min(1.5, (this.tempSizeMultiplier || 1) + 0.1);
         logger.info(`📈 Trend aumentando tamanho de posição: ${this.tempSizeMultiplier}x`, { service: "TradeExecutor" });
         break;
@@ -111,7 +121,6 @@ class TradeExecutorService {
         break;
         
       case "AUMENTAR_SENSIBILIDADE_SPREAD_E_VELOCIDADE":
-        // Aumenta confiança base para sinais
         this.baseConfidenceBoost = Math.min(15, (this.baseConfidenceBoost || 0) + 5);
         logger.info(`⚡ Trend aumentando sensibilidade: +${this.baseConfidenceBoost}% confiança`, { service: "TradeExecutor" });
         break;
@@ -125,7 +134,6 @@ class TradeExecutorService {
         logger.debug(`Melhoria recebida: ${improvement.recommendation}`, { service: "TradeExecutor" });
     }
     
-    // Reseta ajustes temporários após 1 hora
     setTimeout(() => {
       this.tempSizeMultiplier = 1;
       this.baseConfidenceBoost = 0;
@@ -168,13 +176,11 @@ class TradeExecutorService {
         if (prediction) {
           logger.info(`🧠 LearningBrain prediction: ${prediction.recommendation} (padrão: ${prediction.patternUsed || "nenhum"}, win rate esperado: ${prediction.predictedWinRate}%)`, { service: "TradeExecutor" });
           
-          // 🔥 SE O LEARNING BRAIN RECOMENDA PULAR, NÃO EXECUTA
           if (prediction.recommendation === "SKIP") {
             logger.info(`⏭️ LearningBrain recomendou pular: ${prediction.patternUsed || "no pattern"}`, { service: "TradeExecutor" });
             return;
           }
           
-          // 🔥 SE RECOMENDA AGUARDAR, TAMBÉM NÃO EXECUTA AGORA
           if (prediction.recommendation === "WAIT") {
             logger.info(`⏸️ LearningBrain recomendou aguardar`, { service: "TradeExecutor" });
             return;
@@ -199,7 +205,6 @@ class TradeExecutorService {
     } else {
       logger.warn(`❌ Trade failed: ${result.reason}`, { service: "TradeExecutor" });
       
-      // 🔥 SE FOI FALTA DE SALDO, GUARDA NA FILA
       if (result.reason === "INSUFFICIENT_BALANCE" || (result.reason && result.reason.includes("saldo"))) {
         this.pendingSignals.push({
           symbol: signal.symbol,
@@ -278,14 +283,34 @@ class TradeExecutorService {
       return { success: false, reason: "No ticker data" };
     }
 
+    // 🔥 VERIFICA TENDÊNCIA DE MERCADO ANTES DE EXECUTAR
+    const marketTrend = exchange.getMarketTrend ? exchange.getMarketTrend() : { trend: "sideways", strength: 0 };
+    
+    // Não opera contra a tendência principal
+    if (marketTrend.trend === "bullish" && side === "SELL") {
+      logger.warn(`⏸️ Pulando SELL em ${symbol} - Mercado em BULLISH (força: ${marketTrend.strength.toFixed(1)}%)`, { service: "TradeExecutor" });
+      return { success: false, reason: "Contra-tendência (bullish market)" };
+    }
+    
+    if (marketTrend.trend === "bearish" && side === "BUY") {
+      logger.warn(`⏸️ Pulando BUY em ${symbol} - Mercado em BEARISH (força: ${marketTrend.strength.toFixed(1)}%)`, { service: "TradeExecutor" });
+      return { success: false, reason: "Contra-tendência (bearish market)" };
+    }
+    
+    // Em mercado lateral, reduz posição pela metade
+    let trendMultiplier = 1.0;
+    if (marketTrend.trend === "sideways") {
+      trendMultiplier = 0.5;
+      logger.info(`📊 Mercado lateral (sideways) - reduzindo tamanho da posição em 50%`, { service: "TradeExecutor" });
+    }
+
     const cfg = db.getConfig();
     
-    // 🆕 AJUSTA POSITION SIZE BASEADO NA SEQUÊNCIA DE LUCROS/PREJUÍZOS
     const performance = this.agentPerformance[agent] || { consecutiveWins: 0, consecutiveLosses: 0 };
     let adjustedConfidence = confidence;
     let sizeMultiplier = 1.0;
     
-    // 🔥 APLICA AJUSTES DO LEARNING BRAIN
+    // Aplica ajustes do Learning Brain
     if (this.tempSizeMultiplier) {
       sizeMultiplier = sizeMultiplier * this.tempSizeMultiplier;
     }
@@ -293,17 +318,20 @@ class TradeExecutorService {
       adjustedConfidence = Math.min(98, adjustedConfidence + this.baseConfidenceBoost);
     }
     
+    // Aplica multiplicador de tendência
+    sizeMultiplier = sizeMultiplier * trendMultiplier;
+    
     if (performance.consecutiveWins >= 3) {
       sizeMultiplier = Math.min(1.5, sizeMultiplier * (1 + (performance.consecutiveWins * 0.1)));
       adjustedConfidence = Math.min(98, adjustedConfidence + (performance.consecutiveWins * 2));
       logger.info(`📈 ${agent} em sequência de ${performance.consecutiveWins} lucros! Multiplicador: ${sizeMultiplier}x, Confiança ajustada: ${adjustedConfidence}%`, { service: "TradeExecutor" });
     } else if (performance.consecutiveLosses >= 2) {
-      sizeMultiplier = Math.max(0.5, sizeMultiplier * (1 - (performance.consecutiveLosses * 0.2)));
+      sizeMultiplier = Math.max(0.3, sizeMultiplier * (1 - (performance.consecutiveLosses * 0.2)));
       adjustedConfidence = Math.max(50, adjustedConfidence - (performance.consecutiveLosses * 5));
       logger.info(`📉 ${agent} em sequência de ${performance.consecutiveLosses} prejuízos! Multiplicador: ${sizeMultiplier}x, Confiança ajustada: ${adjustedConfidence}%`, { service: "TradeExecutor" });
       
       if (performance.consecutiveLosses >= 3) {
-        logger.warn(`⛔ ${agent} perdeu ${performance.consecutiveLosses} seguidas. Pulando este trade para evitar mais perdas.`, { service: "TradeExecutor" });
+        logger.warn(`⛔ ${agent} perdeu ${performance.consecutiveLosses} seguidas. Pulando este trade.`, { service: "TradeExecutor" });
         return { success: false, reason: "CONSECUTIVE_LOSSES_BREAK" };
       }
     }
@@ -320,7 +348,7 @@ class TradeExecutorService {
     }
     
     const estimatedCost = positionInfo.qty * ticker.price;
-    logger.info(`🔍 DEBUG: estimatedCost = ${estimatedCost} (sizeMultiplier: ${sizeMultiplier}x)`, { service: "TradeExecutor" });
+    logger.info(`🔍 DEBUG: estimatedCost = ${estimatedCost} (sizeMultiplier: ${sizeMultiplier}x, trendMultiplier: ${trendMultiplier}x)`, { service: "TradeExecutor" });
     
     const capitalRequest = await this._requestCapital(agent, estimatedCost, `Trade: ${side} ${symbol}`);
     
@@ -353,8 +381,15 @@ class TradeExecutorService {
         stopLossPercent = cfg.stopLoss * 0.7;
         logger.info(`🎯 Stop loss reduzido para ${stopLossPercent}% (sequência de lucros)`, { service: "TradeExecutor" });
       } else if (performance.consecutiveLosses >= 2) {
-        stopLossPercent = cfg.stopLoss * 1.3;
+        stopLossPercent = cfg.stopLoss * 1.2;
         logger.info(`🎯 Stop loss aumentado para ${stopLossPercent}% (sequência de prejuízos)`, { service: "TradeExecutor" });
+      }
+      
+      // Ajusta stop loss baseado na tendência
+      if (marketTrend.trend === "bullish" && side === "BUY") {
+        stopLossPercent = stopLossPercent * 0.8; // Stop mais apertado em tendência favorável
+      } else if (marketTrend.trend === "bearish" && side === "SELL") {
+        stopLossPercent = stopLossPercent * 0.8;
       }
       
       const stopPrice = side === "BUY" 
@@ -387,6 +422,8 @@ class TradeExecutorService {
         stopLossPercent: stopLossPercent,
         takeProfitPercent: cfg.takeProfit,
         sizeMultiplier: sizeMultiplier,
+        marketTrendAtEntry: marketTrend.trend,
+        trendStrengthAtEntry: marketTrend.strength,
         predictionUsed: prediction?.patternUsed || null,
         predictedWinRate: prediction?.predictedWinRate || null,
         timestamp: new Date().toISOString(),
@@ -405,6 +442,7 @@ class TradeExecutorService {
         agent: agent,
         confidence: adjustedConfidence,
         sizeMultiplier: sizeMultiplier,
+        trend: marketTrend.trend,
         patternUsed: prediction?.patternUsed || "nenhum"
       });
       
@@ -470,7 +508,6 @@ class TradeExecutorService {
     }
   }
 
-  // 🔥 ATUALIZA PERFORMANCE E COMPARTILHA COM LEARNING BRAIN
   _updateAgentPerformance(agent, isWin, pnl) {
     if (!this.agentPerformance[agent]) {
       this.agentPerformance[agent] = { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0, winRate: 0 };
@@ -505,7 +542,6 @@ class TradeExecutorService {
     const totalTrades = perf.totalWins + perf.totalLosses;
     perf.winRate = totalTrades > 0 ? (perf.totalWins / totalTrades) * 100 : 0;
     
-    // 🔥 ENVIA APRENDIZADO PARA O LEARNING BRAIN
     eventBus.emit(`learning:${agent}`, {
       type: "performance_update",
       content: `${agent} win rate ${perf.winRate.toFixed(0)}% após ${totalTrades} trades`,
@@ -520,7 +556,6 @@ class TradeExecutorService {
       }
     });
     
-    // Salva no banco
     if (db.updateAgentPerformance) {
       db.updateAgentPerformance(agent, perf);
     }
