@@ -38,9 +38,14 @@ class ExchangeAdapterService {
     this.prices = {};
     this.tradeHistory = [];
     
-    // 🔥 CONTROLE DE OPORTUNIDADES DE ARBITRAGEM (MAIS LENTO)
+    // Controle de oportunidades de arbitragem (MAIS LENTO)
     this._lastArbitrageCheck = {};
-    this._arbitrageCooldown = 120000; // 🔥 2 MINUTOS (antes 15s)
+    this._arbitrageCooldown = 120000; // 2 MINUTOS
+    
+    // 🔥 CONTROLE DE TENDÊNCIA DE MERCADO (para o Trend)
+    this._marketTrend = "sideways"; // bullish, bearish, sideways
+    this._trendStrength = 0; // 0 a 100
+    this._trendUpdateTime = 0;
     
     // Inicializa preços
     for (const [symbol, price] of Object.entries(INITIAL_PRICES)) {
@@ -74,6 +79,15 @@ class ExchangeAdapterService {
     return balance;
   }
 
+  // 🔥 NOVO: Obtém tendência atual do mercado
+  getMarketTrend() {
+    return {
+      trend: this._marketTrend,
+      strength: this._trendStrength,
+      timestamp: this._trendUpdateTime
+    };
+  }
+
   _startRealisticSimulation() {
     setInterval(() => {
       const now = new Date();
@@ -85,6 +99,10 @@ class ExchangeAdapterService {
       else if (hour >= 0 && hour <= 8) timeFactor = 0.8;
       
       const marketTrend = (Math.random() - 0.5) * 0.0003 * timeFactor;
+      
+      // 🔥 CALCULA TENDÊNCIA GERAL DO MERCADO
+      let avgChange = 0;
+      let count = 0;
       
       for (const [symbol, data] of Object.entries(this.prices)) {
         const vol = VOLATILITY[symbol] || 0.5;
@@ -103,6 +121,11 @@ class ExchangeAdapterService {
         if (symbol === 'SOLUSDT') newPrice = Math.max(20, Math.min(500, newPrice));
         if (symbol === 'XRPUSDT') newPrice = Math.max(0.3, Math.min(3, newPrice));
         
+        // Calcula variação percentual
+        const priceChange = ((newPrice - data.price) / data.price) * 100;
+        avgChange += priceChange;
+        count++;
+        
         data.price = newPrice;
         data.bid = newPrice * 0.999;
         data.ask = newPrice * 1.001;
@@ -120,7 +143,32 @@ class ExchangeAdapterService {
         }
       }
       
+      // 🔥 ATUALIZA TENDÊNCIA DO MERCADO (para ajudar o Trend)
+      if (count > 0) {
+        const avgMarketChange = avgChange / count;
+        this._trendUpdateTime = Date.now();
+        
+        if (avgMarketChange > 0.05) {
+          this._marketTrend = "bullish";
+          this._trendStrength = Math.min(100, Math.abs(avgMarketChange) * 100);
+        } else if (avgMarketChange < -0.05) {
+          this._marketTrend = "bearish";
+          this._trendStrength = Math.min(100, Math.abs(avgMarketChange) * 100);
+        } else {
+          this._marketTrend = "sideways";
+          this._trendStrength = Math.abs(avgMarketChange) * 100;
+        }
+      }
+      
       eventBus.emit("tick", this.prices);
+      
+      // 🔥 EMITE EVENTO DE TENDÊNCIA PARA O LEARNING BRAIN
+      eventBus.emit("market:trend", {
+        trend: this._marketTrend,
+        strength: this._trendStrength,
+        timestamp: Date.now()
+      });
+      
     }, 2000);
   }
 
@@ -151,14 +199,10 @@ class ExchangeAdapterService {
     };
   }
 
-  /**
-   * 🔥 ARBITRAGEM REALISTA - NÃO SOBRECARREGA O SISTEMA
-   */
   async getArbitrageOpportunity(symbol = "BTCUSDT") {
     try {
       const now = Date.now();
       
-      // 🔥 COOLDOWN DE 2 MINUTOS (antes 15s)
       const lastCheck = this._lastArbitrageCheck[symbol] || 0;
       if (now - lastCheck < this._arbitrageCooldown) {
         return null;
@@ -171,13 +215,11 @@ class ExchangeAdapterService {
       const ticker = this.prices[symbol];
       if (!ticker) return null;
       
-      // 🔥 OPORTUNIDADE RARÍSSIMA (5% das verificações)
-      // No mundo real, oportunidades de arbitragem são EXTREMAMENTE RARAS
+      // Oportunidade rara (5% das verificações)
       const shouldGenerate = Math.random() < 0.05;
       if (!shouldGenerate) return null;
       
-      // 🔥 SPREAD REALISTA (0.01% a 0.08%)
-      // No mundo real, spread entre exchanges é muito pequeno
+      // Spread realista (0.01% a 0.08%)
       const minSpread = 0.01;
       const maxSpread = 0.08;
       const simulatedSpread = minSpread + (Math.random() * (maxSpread - minSpread));
