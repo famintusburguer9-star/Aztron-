@@ -38,9 +38,9 @@ class ExchangeAdapterService {
     this.prices = {};
     this.tradeHistory = [];
     
-    // Controle de oportunidades de arbitragem
+    // 🔥 CONTROLE DE OPORTUNIDADES DE ARBITRAGEM (MAIS LENTO)
     this._lastArbitrageCheck = {};
-    this._arbitrageCooldown = 15000; // 🔥 REDUZIDO: 15 segundos (antes 30s)
+    this._arbitrageCooldown = 120000; // 🔥 2 MINUTOS (antes 15s)
     
     // Inicializa preços
     for (const [symbol, price] of Object.entries(INITIAL_PRICES)) {
@@ -152,13 +152,13 @@ class ExchangeAdapterService {
   }
 
   /**
-   * 🔥 ARBITRAGEM ATIVA - GERA OPORTUNIDADES REGULARMENTE
+   * 🔥 ARBITRAGEM REALISTA - NÃO SOBRECARREGA O SISTEMA
    */
   async getArbitrageOpportunity(symbol = "BTCUSDT") {
     try {
       const now = Date.now();
       
-      // Cooldown: verifica a cada 15 segundos
+      // 🔥 COOLDOWN DE 2 MINUTOS (antes 15s)
       const lastCheck = this._lastArbitrageCheck[symbol] || 0;
       if (now - lastCheck < this._arbitrageCooldown) {
         return null;
@@ -171,17 +171,17 @@ class ExchangeAdapterService {
       const ticker = this.prices[symbol];
       if (!ticker) return null;
       
-      // 🔥 GERA OPORTUNIDADE COM MAIS FREQUÊNCIA (35% das verificações)
-      const shouldGenerate = Math.random() < 0.35;
+      // 🔥 OPORTUNIDADE RARÍSSIMA (5% das verificações)
+      // No mundo real, oportunidades de arbitragem são EXTREMAMENTE RARAS
+      const shouldGenerate = Math.random() < 0.05;
       if (!shouldGenerate) return null;
       
-      // 🔥 SPREAD REALISTA PARA ARBITRAGEM (0.05% a 0.35%)
-      // Valores reais que acontecem no mercado entre exchanges
-      const minSpread = 0.05;
-      const maxSpread = 0.35;
+      // 🔥 SPREAD REALISTA (0.01% a 0.08%)
+      // No mundo real, spread entre exchanges é muito pequeno
+      const minSpread = 0.01;
+      const maxSpread = 0.08;
       const simulatedSpread = minSpread + (Math.random() * (maxSpread - minSpread));
       
-      // Decide aleatoriamente qual exchange está com preço mais alto
       const isBinanceHigher = Math.random() > 0.5;
       let binancePrice = realPrice;
       let bybitPrice = realPrice;
@@ -195,7 +195,7 @@ class ExchangeAdapterService {
       const buyExchange = binancePrice < bybitPrice ? "BINANCE" : "BYBIT";
       const sellExchange = binancePrice < bybitPrice ? "BYBIT" : "BINANCE";
 
-      logger.info(`💰 Oportunidade de arbitragem em ${symbol}: spread ${simulatedSpread.toFixed(3)}% (${buyExchange} → ${sellExchange})`, { service: "ExchangeAdapter" });
+      logger.debug(`💰 Oportunidade de arbitragem em ${symbol}: spread ${simulatedSpread.toFixed(3)}%`, { service: "ExchangeAdapter" });
 
       return {
         symbol,
