@@ -74,38 +74,26 @@ class HFTService {
     // Escuta ticks de preço
     eventBus.on("tick", (prices) => this._onTick(prices));
     
-    // 🔥🔥🔥 NOVO: ESCUTA SINAIS DO SIGNAL SERVICE (igual o Trend)
+    // 🔥🔥🔥 ESCUTA SINAIS DO SIGNAL SERVICE (igual o Trend)
     eventBus.on("signal", async (signal) => {
-      // Verifica se está rodando
       if (!this.running) return;
-      
-      // Verifica se o sinal está ativo
       if (signal.status !== "ACTIVE") return;
-      
-      // Verifica se tem símbolo
       if (!signal.symbol) return;
-      
-      // Verifica se tem capital
       if (this.capitalAllocated <= 0) return;
       
-      // Verifica cooldown do símbolo
       const now = Date.now();
       const lastTrade = this.lastTradeTime[signal.symbol];
       if (lastTrade && (now - lastTrade) < HFT_CONFIG.COOLDOWN_SECONDS * 1000) return;
       
-      // Verifica se já tem trade aberto para este símbolo
       const hasOpenTrade = this.activeTrades.some(t => t.symbol === signal.symbol);
       if (hasOpenTrade) return;
       
-      // 🔥 HFT só opera com confiança mínima (pode ser menor que o Trend)
       const minConfidence = 55;
       if (signal.confidence < minConfidence) return;
       
-      // Obtém ticker para o preço
       const ticker = exchange.getTicker(signal.symbol);
       if (!ticker) return;
       
-      // Executa trade baseado no sinal (com tamanho reduzido para HFT)
       logger.info(`📡 HFT recebeu sinal do SignalService: ${signal.type} ${signal.symbol} (conf: ${signal.confidence}%)`, { service: "HFT" });
       
       await this._executeTrade(signal.type, signal.symbol, ticker.price, signal.confidence);
@@ -137,7 +125,6 @@ class HFTService {
       }
     });
     
-    // 🔥 ESCUTA MELHORIAS DIRETAS
     eventBus.on(`improvement:${this.agentId}`, (improvement) => {
       this.applyImprovement(improvement);
     });
@@ -145,7 +132,6 @@ class HFTService {
     logger.info("HFTService initialized", { service: "HFT" });
   }
   
-  // 🔥 INICIALIZAÇÃO
   async initialize() {
     if (this.initialized) return { success: true, capital: this.capitalAllocated };
     
@@ -155,6 +141,15 @@ class HFTService {
     while (this.capitalAllocated === 0 && attempts < 60) {
       await this.sleep(100);
       attempts++;
+    }
+    
+    // 🔥 TENTA RECUPERAR CAPITAL DIRETAMENTE DO CAPITAL DISTRIBUTOR
+    if (this.capitalAllocated === 0) {
+      const capital = capitalDistributor.getAgentInfo(this.agentId)?.balance || 0;
+      if (capital > 0) {
+        this.capitalAllocated = capital;
+        logger.info(`✅ HFT recuperou capital do CapitalDistributor: $${this.capitalAllocated}`, { service: "HFT" });
+      }
     }
     
     this.initialized = true;
@@ -171,7 +166,6 @@ class HFTService {
     }
   }
   
-  // 🔥 APLICA MELHORIAS DO LEARNING BRAIN
   applyImprovement(improvement) {
     if (!improvement) return;
     
@@ -199,7 +193,6 @@ class HFTService {
         logger.debug(`Melhoria recebida: ${improvement.recommendation}`, { service: "HFT" });
     }
     
-    // Reseta ajustes temporários após 1 hora
     setTimeout(() => {
       this.tempScanMultiplier = 1.0;
       this.tempRiskMultiplier = 1.0;
@@ -209,7 +202,6 @@ class HFTService {
     this.shareLearning();
   }
   
-  // 🔥 COMPARTILHA APRENDIZADO COM LEARNING BRAIN
   shareLearning() {
     const recentTrades = this.tradeHistory.filter(t => t.status === "CLOSED").slice(-20);
     const wins = recentTrades.filter(t => t.pnl > 0).length;
@@ -286,9 +278,16 @@ class HFTService {
   start() {
     if (this.running) return { success: false, reason: "Already running" };
     
+    // 🔥 TENTA RECUPERAR CAPITAL SE ESTIVER ZERADO
     if (this.capitalAllocated <= 0) {
-      logger.warn("HFTService: sem capital, vai aguardar alocação...", { service: "HFT" });
-      return { success: false, reason: "No capital allocated - waiting" };
+      const capital = capitalDistributor.getAgentInfo(this.agentId)?.balance || 0;
+      if (capital > 0) {
+        this.capitalAllocated = capital;
+        logger.info(`✅ HFT recuperou capital: $${this.capitalAllocated}`, { service: "HFT" });
+      } else {
+        logger.warn("HFTService: sem capital, vai aguardar alocação...", { service: "HFT" });
+        return { success: false, reason: "No capital allocated - waiting" };
+      }
     }
     
     this.running = true;
@@ -452,7 +451,6 @@ class HFTService {
     const totalEquity = this.capitalAllocated;
     if (totalEquity <= 0) return 0;
     
-    // 🔥 HFT usa posições MENORES que o Trend (MAX_POSITION_SIZE = 2%)
     let qty = (totalEquity * HFT_CONFIG.MAX_POSITION_SIZE * this.tempRiskMultiplier) / price;
     const confidenceMultiplier = 0.5 + (confidence / 100);
     qty = qty * confidenceMultiplier;
@@ -610,7 +608,10 @@ class HFTService {
       if (!this._checkRateLimits(symbol)) continue;
       
       const indicators = this._calculateIndicators(symbol);
-      if (!indicators || indicators.volatility < 0.05) continue;
+      if (!indicators) continue;
+      
+      // 🔥 REMOVIDO: verificação de volatilidade mínima (volatility < 0.05)
+      // Agora o HFT opera mesmo em baixa volatilidade
       
       const signal = this._generateSignal(symbol, indicators);
       if (!signal || signal.signal === "HOLD") continue;
