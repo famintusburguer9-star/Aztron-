@@ -47,6 +47,22 @@ class ExchangeAdapterService {
     this._trendStrength = 0; // 0 a 100
     this._trendUpdateTime = 0;
     
+    // 🆕 SIMULAÇÃO PARA DEEP PATTERN (Candles/velas)
+    this.candles = {}; // Armazena velas por símbolo
+    this._lastCandleUpdate = {};
+    
+    // 🆕 SIMULAÇÃO PARA SENTIMENT (Notícias/humor)
+    this._sentimentScores = {}; // -1 a 1
+    this._lastSentimentUpdate = {};
+    
+    // 🆕 SIMULAÇÃO PARA ARBITRAGEM (Múltiplas exchanges)
+    this.multiExchangePrices = {
+      binance: {},
+      bybit: {},
+      okx: {},
+      kucoin: {}
+    };
+    
     // Inicializa preços
     for (const [symbol, price] of Object.entries(INITIAL_PRICES)) {
       this.prices[symbol] = {
@@ -61,15 +77,31 @@ class ExchangeAdapterService {
         timestamp: Date.now()
       };
       this._lastArbitrageCheck[symbol] = 0;
+      
+      // Inicializa candles vazios
+      this.candles[symbol] = [];
+      this._lastCandleUpdate[symbol] = Date.now();
+      
+      // Inicializa sentiment
+      this._sentimentScores[symbol] = 0;
+      this._lastSentimentUpdate[symbol] = Date.now();
+      
+      // Inicializa preços multi-exchange
+      this.multiExchangePrices.binance[symbol] = price;
+      this.multiExchangePrices.bybit[symbol] = price;
+      this.multiExchangePrices.okx[symbol] = price;
+      this.multiExchangePrices.kucoin[symbol] = price;
     }
     
     this._startRealisticSimulation();
+    this._startCandleSimulation();    // 🆕 Para Deep Pattern
+    this._startSentimentSimulation(); // 🆕 Para Sentiment Agent
     
     logger.info("ExchangeAdapterService initialized", { 
       service: "ExchangeAdapter", 
       exchange: this.exchange, 
       mode: this.mode,
-      status: "Usando CapitalDistributor para saldos"
+      status: "Com simulações para Arbitrage, Deep Pattern e Sentiment"
     });
   }
 
@@ -79,13 +111,227 @@ class ExchangeAdapterService {
     return balance;
   }
 
-  // 🔥 NOVO: Obtém tendência atual do mercado
+  // 🔥 Obtém tendência atual do mercado
   getMarketTrend() {
     return {
       trend: this._marketTrend,
       strength: this._trendStrength,
       timestamp: this._trendUpdateTime
     };
+  }
+
+  // 🆕 PARA ARBITRAGE: Obtém preços de múltiplas exchanges
+  getMultiExchangePrices(symbol) {
+    const basePrice = this.prices[symbol]?.price || INITIAL_PRICES[symbol];
+    
+    // Simula spreads realísticos entre exchanges (0.05% a 0.5%)
+    const spreadBinance = (Math.random() - 0.5) * 0.005;
+    const spreadBybit = (Math.random() - 0.5) * 0.005;
+    const spreadOkx = (Math.random() - 0.5) * 0.005;
+    const spreadKucoin = (Math.random() - 0.5) * 0.005;
+    
+    return {
+      binance: basePrice * (1 + spreadBinance),
+      bybit: basePrice * (1 + spreadBybit),
+      okx: basePrice * (1 + spreadOkx),
+      kucoin: basePrice * (1 + spreadKucoin)
+    };
+  }
+
+  // 🆕 PARA DEEP PATTERN: Obtém candles/velas históricas
+  getCandles(symbol, interval = "1h", limit = 100) {
+    if (!this.candles[symbol] || this.candles[symbol].length === 0) {
+      this._generateInitialCandles(symbol, limit);
+    }
+    
+    // Retorna as últimas 'limit' candles
+    return this.candles[symbol].slice(-limit);
+  }
+
+  _generateInitialCandles(symbol, count = 100) {
+    const basePrice = this.prices[symbol]?.price || INITIAL_PRICES[symbol];
+    const candles = [];
+    let currentPrice = basePrice;
+    const now = Date.now();
+    
+    for (let i = count; i > 0; i--) {
+      const volatility = VOLATILITY[symbol] || 0.5;
+      const change = (Math.random() - 0.5) * (volatility / 10);
+      const open = currentPrice;
+      const close = currentPrice * (1 + change);
+      const high = Math.max(open, close) * (1 + Math.random() * 0.005);
+      const low = Math.min(open, close) * (1 - Math.random() * 0.005);
+      
+      candles.push({
+        timestamp: now - (i * 3600000), // 1 hora cada
+        open,
+        high,
+        low,
+        close,
+        volume: Math.random() * 1000000
+      });
+      
+      currentPrice = close;
+    }
+    
+    this.candles[symbol] = candles;
+  }
+
+  _startCandleSimulation() {
+    // Atualiza candles a cada minuto (para Deep Pattern ter dados frescos)
+    setInterval(() => {
+      for (const [symbol, data] of Object.entries(this.prices)) {
+        const lastCandle = this.candles[symbol]?.[this.candles[symbol].length - 1];
+        const now = Date.now();
+        const lastUpdate = this._lastCandleUpdate[symbol] || now;
+        
+        // Se passou 1 hora, cria nova candle
+        if (now - lastUpdate >= 3600000) {
+          const currentPrice = data.price;
+          const lastClose = lastCandle?.close || currentPrice;
+          const change = (currentPrice - lastClose) / lastClose;
+          
+          const newCandle = {
+            timestamp: now,
+            open: lastClose,
+            high: Math.max(lastClose, currentPrice) * (1 + Math.random() * 0.002),
+            low: Math.min(lastClose, currentPrice) * (1 - Math.random() * 0.002),
+            close: currentPrice,
+            volume: Math.random() * 1000000
+          };
+          
+          this.candles[symbol].push(newCandle);
+          if (this.candles[symbol].length > 500) this.candles[symbol].shift();
+          this._lastCandleUpdate[symbol] = now;
+          
+          // Emite evento para Deep Pattern
+          eventBus.emit("market:candle", {
+            symbol,
+            candle: newCandle,
+            interval: "1h"
+          });
+        }
+      }
+    }, 60000); // Verifica a cada minuto
+  }
+
+  // 🆕 PARA SENTIMENT: Obtém sentimento do mercado
+  getMarketSentiment(symbol) {
+    const score = this._sentimentScores[symbol] || 0;
+    
+    // Determina sentimento baseado no score (-1 a 1)
+    let sentiment = "neutral";
+    if (score > 0.3) sentiment = "bullish";
+    if (score > 0.6) sentiment = "very_bullish";
+    if (score < -0.3) sentiment = "bearish";
+    if (score < -0.6) sentiment = "very_bearish";
+    
+    return {
+      symbol,
+      sentiment,
+      score: score,
+      confidence: Math.abs(score),
+      sources: {
+        news: score * (0.3 + Math.random() * 0.3),
+        social: score * (0.2 + Math.random() * 0.3),
+        technical: score * (0.4 + Math.random() * 0.2)
+      },
+      timestamp: Date.now()
+    };
+  }
+
+  _startSentimentSimulation() {
+    // Atualiza sentimento a cada 30 segundos
+    setInterval(() => {
+      for (const symbol of Object.keys(INITIAL_PRICES)) {
+        const priceChange = this.prices[symbol]?.change24h || 0;
+        
+        // Sentimento baseado no movimento de preço
+        let baseSentiment = 0;
+        if (priceChange > 1) baseSentiment = 0.4;
+        else if (priceChange > 0.5) baseSentiment = 0.2;
+        else if (priceChange < -1) baseSentiment = -0.4;
+        else if (priceChange < -0.5) baseSentiment = -0.2;
+        
+        // Adiciona ruído aleatório
+        const noise = (Math.random() - 0.5) * 0.3;
+        const newSentiment = Math.max(-1, Math.min(1, baseSentiment + noise));
+        
+        // Suaviza a mudança (não muda muito rápido)
+        const oldSentiment = this._sentimentScores[symbol] || 0;
+        this._sentimentScores[symbol] = oldSentiment * 0.7 + newSentiment * 0.3;
+        
+        // Emite evento para Sentiment Agent
+        eventBus.emit("market:sentiment", {
+          symbol,
+          sentiment: this.getMarketSentiment(symbol),
+          timestamp: Date.now()
+        });
+      }
+    }, 30000);
+  }
+
+  // 🆕 PARA ARBITRAGE: Obtém oportunidade com múltiplas exchanges
+  async getMultiExchangeArbitrage(symbol = "BTCUSDT") {
+    try {
+      const now = Date.now();
+      const lastCheck = this._lastArbitrageCheck[symbol] || 0;
+      
+      // Arbitrage mais frequente agora (30 segundos)
+      if (now - lastCheck < 30000) return null;
+      this._lastArbitrageCheck[symbol] = now;
+      
+      const prices = this.getMultiExchangePrices(symbol);
+      const exchanges = Object.keys(prices);
+      
+      // Encontra menor preço (compra) e maior preço (venda)
+      let buyExchange = exchanges[0];
+      let sellExchange = exchanges[0];
+      let lowestPrice = prices[buyExchange];
+      let highestPrice = prices[sellExchange];
+      
+      for (const ex of exchanges) {
+        if (prices[ex] < lowestPrice) {
+          lowestPrice = prices[ex];
+          buyExchange = ex;
+        }
+        if (prices[ex] > highestPrice) {
+          highestPrice = prices[ex];
+          sellExchange = ex;
+        }
+      }
+      
+      const spreadPercent = ((highestPrice - lowestPrice) / lowestPrice) * 100;
+      
+      // Só retorna oportunidade se spread for significativo (> 0.15%)
+      if (spreadPercent < 0.15) return null;
+      
+      // 70% de chance de ser oportunidade realista
+      const isValid = Math.random() < 0.7;
+      if (!isValid) return null;
+      
+      logger.info(`💰 Oportunidade de arbitragem multi-exchange em ${symbol}: spread ${spreadPercent.toFixed(3)}% (comprar ${buyExchange} @ $${lowestPrice.toFixed(2)} | vender ${sellExchange} @ $${highestPrice.toFixed(2)})`);
+      
+      return {
+        symbol,
+        buyExchange,
+        sellExchange,
+        buyPrice: lowestPrice,
+        sellPrice: highestPrice,
+        spreadPercent: parseFloat(spreadPercent.toFixed(4)),
+        netSpread: parseFloat((spreadPercent - 0.05).toFixed(4)), // depois de taxas
+        isProfitable: spreadPercent > 0.2,
+        timestamp: Date.now()
+      };
+    } catch (error) {
+      logger.error(`Erro na análise de arbitragem multi-exchange: ${error.message}`);
+      return null;
+    }
+  }
+
+  // Mantém método antigo para compatibilidade
+  async getArbitrageOpportunity(symbol = "BTCUSDT") {
+    return this.getMultiExchangeArbitrage(symbol);
   }
 
   _startRealisticSimulation() {
@@ -100,7 +346,6 @@ class ExchangeAdapterService {
       
       const marketTrend = (Math.random() - 0.5) * 0.0003 * timeFactor;
       
-      // 🔥 CALCULA TENDÊNCIA GERAL DO MERCADO
       let avgChange = 0;
       let count = 0;
       
@@ -121,7 +366,6 @@ class ExchangeAdapterService {
         if (symbol === 'SOLUSDT') newPrice = Math.max(20, Math.min(500, newPrice));
         if (symbol === 'XRPUSDT') newPrice = Math.max(0.3, Math.min(3, newPrice));
         
-        // Calcula variação percentual
         const priceChange = ((newPrice - data.price) / data.price) * 100;
         avgChange += priceChange;
         count++;
@@ -141,9 +385,15 @@ class ExchangeAdapterService {
           data.price24hAgo = newPrice;
           data.lastReset = Date.now();
         }
+        
+        // 🆕 Atualiza preços multi-exchange
+        const multiSpread = (Math.random() - 0.5) * 0.003;
+        this.multiExchangePrices.binance[symbol] = newPrice * (1 + multiSpread);
+        this.multiExchangePrices.bybit[symbol] = newPrice * (1 + (Math.random() - 0.5) * 0.003);
+        this.multiExchangePrices.okx[symbol] = newPrice * (1 + (Math.random() - 0.5) * 0.003);
+        this.multiExchangePrices.kucoin[symbol] = newPrice * (1 + (Math.random() - 0.5) * 0.003);
       }
       
-      // 🔥 ATUALIZA TENDÊNCIA DO MERCADO (para ajudar o Trend)
       if (count > 0) {
         const avgMarketChange = avgChange / count;
         this._trendUpdateTime = Date.now();
@@ -161,11 +411,15 @@ class ExchangeAdapterService {
       }
       
       eventBus.emit("tick", this.prices);
-      
-      // 🔥 EMITE EVENTO DE TENDÊNCIA PARA O LEARNING BRAIN
       eventBus.emit("market:trend", {
         trend: this._marketTrend,
         strength: this._trendStrength,
+        timestamp: Date.now()
+      });
+      
+      // 🆕 Emite evento de preços multi-exchange para Arbitrage
+      eventBus.emit("market:multiExchange", {
+        prices: this.multiExchangePrices,
         timestamp: Date.now()
       });
       
@@ -199,63 +453,6 @@ class ExchangeAdapterService {
     };
   }
 
-  async getArbitrageOpportunity(symbol = "BTCUSDT") {
-    try {
-      const now = Date.now();
-      
-      const lastCheck = this._lastArbitrageCheck[symbol] || 0;
-      if (now - lastCheck < this._arbitrageCooldown) {
-        return null;
-      }
-      this._lastArbitrageCheck[symbol] = now;
-      
-      const realPrice = await this.getPrice(symbol);
-      if (!realPrice) return null;
-      
-      const ticker = this.prices[symbol];
-      if (!ticker) return null;
-      
-      // Oportunidade rara (5% das verificações)
-      const shouldGenerate = Math.random() < 0.05;
-      if (!shouldGenerate) return null;
-      
-      // Spread realista (0.01% a 0.08%)
-      const minSpread = 0.01;
-      const maxSpread = 0.08;
-      const simulatedSpread = minSpread + (Math.random() * (maxSpread - minSpread));
-      
-      const isBinanceHigher = Math.random() > 0.5;
-      let binancePrice = realPrice;
-      let bybitPrice = realPrice;
-      
-      if (isBinanceHigher) {
-        binancePrice = realPrice * (1 + simulatedSpread / 100);
-      } else {
-        bybitPrice = realPrice * (1 + simulatedSpread / 100);
-      }
-      
-      const buyExchange = binancePrice < bybitPrice ? "BINANCE" : "BYBIT";
-      const sellExchange = binancePrice < bybitPrice ? "BYBIT" : "BINANCE";
-
-      logger.debug(`💰 Oportunidade de arbitragem em ${symbol}: spread ${simulatedSpread.toFixed(3)}%`, { service: "ExchangeAdapter" });
-
-      return {
-        symbol,
-        binancePrice,
-        bybitPrice,
-        spread: parseFloat(simulatedSpread.toFixed(4)),
-        buyExchange,
-        sellExchange,
-        isRealData: false,
-        isSimulated: true,
-        timestamp: Date.now()
-      };
-    } catch (error) {
-      logger.error(`Erro na análise de arbitragem: ${error.message}`);
-      return null;
-    }
-  }
-
   async placeOrder(symbol, side, qty, price = null, agentId = "trend") {
     if (this.mode === "PAPER") {
       const ticker = this.prices[symbol];
@@ -271,9 +468,6 @@ class ExchangeAdapterService {
           throw new Error(`Insufficient balance for ${agentId}. Need $${cost.toFixed(2)}, have $${currentBalance.toFixed(2)}`);
         }
       }
-      
-      // ❌ BLOCO REMOVIDO - NÃO RESERVA CAPITAL AQUI MAIS
-      // A reserva já foi feita antes (ou será feita pelo CapitalDistributor)
       
       const newBalance = currentBalance - cost;
       
@@ -304,9 +498,7 @@ class ExchangeAdapterService {
     throw new Error("Live trading not implemented — configure API keys and set mode to LIVE");
   }
 
-  // ✅ CORRETO - usa o agente passado como parâmetro
   getBalance(agentId) {
-    // Se não veio agentId, usa o padrão
     const id = agentId || "trend";
     return { USDT: this.getAgentBalance(id) };
   }
