@@ -8,7 +8,7 @@ const capitalDistributor = require("./CapitalDistributorService");
 
 // ─── CONFIGURAÇÕES DO HFT ─────────────────────────────────────────────────────
 const HFT_CONFIG = {
-  SYMBOLS: ["BTCUSDT", "ETHUSDT", "BNBUSDT"],
+  SYMBOLS: ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"],
   MAX_POSITION_SIZE: 0.02,        // 2% do capital por trade
   STOP_LOSS: 0.003,               // 0.3% stop loss
   TAKE_PROFIT: 0.006,             // 0.6% take profit
@@ -42,6 +42,23 @@ const STRATEGIES = {
     if (priceChange < -0.15) return { signal: "SELL", confidence: 65 + Math.abs(priceChange) * 50 };
     return { signal: "HOLD", confidence: 0 };
   },
+  
+  // 🆕 NOVA ESTRATÉGIA: VWAP (Volume Weighted Average Price)
+  VWAP: (price, indicators) => {
+    const vwap = indicators?.vwap || price;
+    const deviation = ((price - vwap) / vwap) * 100;
+    if (deviation < -0.15) return { signal: "BUY", confidence: 68 };
+    if (deviation > 0.15) return { signal: "SELL", confidence: 68 };
+    return { signal: "HOLD", confidence: 0 };
+  },
+  
+  // 🆕 NOVA ESTRATÉGIA: Order Book Imbalance
+  ORDER_BOOK: (price, indicators) => {
+    const bidAskRatio = indicators?.bidAskRatio || 1;
+    if (bidAskRatio > 1.2) return { signal: "BUY", confidence: 72 };
+    if (bidAskRatio < 0.8) return { signal: "SELL", confidence: 72 };
+    return { signal: "HOLD", confidence: 0 };
+  }
 };
 
 class HFTService {
@@ -66,40 +83,25 @@ class HFTService {
     this.tempScanMultiplier = 1.0;
     this.tempRiskMultiplier = 1.0;
     
+    // Controle de sinais emitidos (evita spam)
+    this.lastSignalEmitted = {};
+    this.signalCooldown = 60000; // 1 minuto entre sinais do mesmo símbolo
+    
     // Inicializa histórico de preços
     HFT_CONFIG.SYMBOLS.forEach(sym => {
       this._priceHistory[sym] = [];
+      this.lastSignalEmitted[sym] = 0;
     });
     
     // Escuta ticks de preço
     eventBus.on("tick", (prices) => this._onTick(prices));
     
-    // 🔥🔥🔥 ESCUTA SINAIS DO SIGNAL SERVICE (igual o Trend)
+    // 🔥 CONSUME SINAIS DO SIGNAL SERVICE (para executar trades)
     eventBus.on("signal", async (signal) => {
-      if (!this.running) return;
-      if (signal.status !== "ACTIVE") return;
-      if (!signal.symbol) return;
-      if (this.capitalAllocated <= 0) return;
-      
-      const now = Date.now();
-      const lastTrade = this.lastTradeTime[signal.symbol];
-      if (lastTrade && (now - lastTrade) < HFT_CONFIG.COOLDOWN_SECONDS * 1000) return;
-      
-      const hasOpenTrade = this.activeTrades.some(t => t.symbol === signal.symbol);
-      if (hasOpenTrade) return;
-      
-      const minConfidence = 55;
-      if (signal.confidence < minConfidence) return;
-      
-      const ticker = exchange.getTicker(signal.symbol);
-      if (!ticker) return;
-      
-      logger.info(`📡 HFT recebeu sinal do SignalService: ${signal.type} ${signal.symbol} (conf: ${signal.confidence}%)`, { service: "HFT" });
-      
-      await this._executeTrade(signal.type, signal.symbol, ticker.price, signal.confidence);
+      await this._onExternalSignal(signal);
     });
     
-    // 🔥 ESCUTA ALOCAÇÃO DE CAPITAL - INICIA AUTOMATICAMENTE
+    // 🔥 ESCUTA ALOCAÇÃO DE CAPITAL
     eventBus.on(`capital:${this.agentId}:allocated`, (data) => {
       this.capitalAllocated = data.amount;
       logger.info(`💰 HFT recebeu capital: $${this.capitalAllocated} (${data.mode} MODE)`, { service: "HFT" });
@@ -110,7 +112,7 @@ class HFTService {
       }
     });
     
-    // 🔥 ESCUTA RETORNO DE CAPITAL (quando trade fecha)
+    // 🔥 ESCUTA RETORNO DE CAPITAL
     eventBus.on("capital:return", ({ agentId, amount, reason }) => {
       if (agentId === this.agentId && amount !== 0) {
         this.capitalAllocated += amount;
@@ -129,7 +131,7 @@ class HFTService {
       this.applyImprovement(improvement);
     });
     
-    logger.info("HFTService initialized", { service: "HFT" });
+    logger.info("HFTService initialized - emitindo sinais próprios", { service: "HFT" });
   }
   
   async initialize() {
@@ -143,7 +145,6 @@ class HFTService {
       attempts++;
     }
     
-    // 🔥 TENTA RECUPERAR CAPITAL DIRETAMENTE DO CAPITAL DISTRIBUTOR
     if (this.capitalAllocated === 0) {
       const capital = capitalDistributor.getAgentInfo(this.agentId)?.balance || 0;
       if (capital > 0) {
@@ -164,6 +165,71 @@ class HFTService {
       logger.warn("⚠️ HFTService initialized sem capital - aguardando evento de alocação", { service: "HFT" });
       return { success: true, capital: 0, waitingForCapital: true };
     }
+  }
+  
+  // 🔥 PROCESSA SINAIS EXTERNOS (do SignalService)
+  async _onExternalSignal(signal) {
+    if (!this.running) return;
+    if (signal.status !== "ACTIVE") return;
+    if (!signal.symbol) return;
+    if (this.capitalAllocated <= 0) return;
+    
+    // Só processa sinais que não são de outros agentes HFT (evita loop)
+    if (signal.agent === this.agentId) return;
+    
+    const now = Date.now();
+    const lastTrade = this.lastTradeTime[signal.symbol];
+    if (lastTrade && (now - lastTrade) < HFT_CONFIG.COOLDOWN_SECONDS * 1000) return;
+    
+    const hasOpenTrade = this.activeTrades.some(t => t.symbol === signal.symbol);
+    if (hasOpenTrade) return;
+    
+    const minConfidence = 55;
+    if (signal.confidence < minConfidence) return;
+    
+    const ticker = exchange.getTicker(signal.symbol);
+    if (!ticker) return;
+    
+    logger.info(`📡 HFT recebeu sinal externo: ${signal.type} ${signal.symbol} (conf: ${signal.confidence}%) de ${signal.agent}`, { service: "HFT" });
+    
+    await this._executeTrade(signal.type, signal.symbol, ticker.price, signal.confidence);
+  }
+  
+  // 🔥 EMITE SINAL PRÓPRIO PARA O TRADEEXECUTOR
+  _emitOwnSignal(signalType, symbol, confidence, strategy, reasoning) {
+    const now = Date.now();
+    const lastSignal = this.lastSignalEmitted[symbol] || 0;
+    
+    if (now - lastSignal < this.signalCooldown) {
+      logger.debug(`⏸️ HFT em cooldown para ${symbol} - aguardando ${Math.ceil((this.signalCooldown - (now - lastSignal)) / 1000)}s`, { service: "HFT" });
+      return;
+    }
+    
+    if (confidence < HFT_CONFIG.MIN_CONFIDENCE) return;
+    
+    const signal = {
+      type: signalType,
+      symbol: symbol,
+      confidence: Math.min(98, confidence),
+      strategy: `HFT_${strategy}`,
+      agent: this.agentId,
+      status: "ACTIVE",
+      reason: reasoning,
+      sizeMultiplier: 0.8 + (confidence / 100), // HFT usa posições menores
+      priority: confidence > 75 ? "HIGH" : "NORMAL",
+      metadata: {
+        source: "hft_scan",
+        strategy: strategy,
+        timestamp: now
+      }
+    };
+    
+    this.lastSignalEmitted[symbol] = now;
+    
+    logger.info(`📢 HFT emitindo sinal próprio: ${signal.type} ${symbol} (conf: ${signal.confidence}%) - ${strategy}`, { service: "HFT" });
+    
+    eventBus.emit("signal", signal);
+    eventBus.emit("hft:signal", signal);
   }
   
   applyImprovement(improvement) {
@@ -278,7 +344,6 @@ class HFTService {
   start() {
     if (this.running) return { success: false, reason: "Already running" };
     
-    // 🔥 TENTA RECUPERAR CAPITAL SE ESTIVER ZERADO
     if (this.capitalAllocated <= 0) {
       const capital = capitalDistributor.getAgentInfo(this.agentId)?.balance || 0;
       if (capital > 0) {
@@ -363,7 +428,9 @@ class HFTService {
       if (!this._priceHistory[symbol]) this._priceHistory[symbol] = [];
       this._priceHistory[symbol].push({
         price: data.price,
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        bid: data.bid,
+        ask: data.ask
       });
       
       if (this._priceHistory[symbol].length > 100) {
@@ -385,7 +452,20 @@ class HFTService {
     const high24h = Math.max(...prices);
     const low24h = Math.min(...prices);
     
-    return { currentPrice, avgPrice, change5m, volatility, high24h, low24h };
+    // VWAP simplificado
+    const typicalPrices = history.map(h => (h.price + (h.bid || h.price) + (h.ask || h.price)) / 3);
+    const vwap = typicalPrices.reduce((a, b) => a + b, 0) / typicalPrices.length;
+    
+    // Bid/Ask ratio
+    const lastBid = history[history.length - 1]?.bid || currentPrice * 0.999;
+    const lastAsk = history[history.length - 1]?.ask || currentPrice * 1.001;
+    const bidAskRatio = lastBid / lastAsk;
+    
+    return { 
+      currentPrice, avgPrice, change5m, volatility, high24h, low24h, 
+      vwap, bidAskRatio,
+      bid: lastBid, ask: lastAsk
+    };
   }
   
   _calculateVolatility(prices) {
@@ -435,16 +515,18 @@ class HFTService {
     
     if (buyCount >= 2) {
       const avgConfidence = signals.filter(s => s.signal === "BUY").reduce((a, b) => a + b.confidence, 0) / buyCount;
-      return { signal: "BUY", confidence: Math.min(95, Math.round(avgConfidence)) };
+      const bestStrategy = signals.find(s => s.signal === "BUY")?.strategy || "MULTI_BUY";
+      return { signal: "BUY", confidence: Math.min(95, Math.round(avgConfidence)), strategy: bestStrategy };
     }
     
     if (sellCount >= 2) {
       const avgConfidence = signals.filter(s => s.signal === "SELL").reduce((a, b) => a + b.confidence, 0) / sellCount;
-      return { signal: "SELL", confidence: Math.min(95, Math.round(avgConfidence)) };
+      const bestStrategy = signals.find(s => s.signal === "SELL")?.strategy || "MULTI_SELL";
+      return { signal: "SELL", confidence: Math.min(95, Math.round(avgConfidence)), strategy: bestStrategy };
     }
     
     const best = signals.reduce((a, b) => a.confidence > b.confidence ? a : b);
-    return { signal: best.signal, confidence: best.confidence };
+    return { signal: best.signal, confidence: best.confidence, strategy: best.strategy };
   }
   
   _calculatePositionSize(symbol, price, confidence) {
@@ -486,6 +568,7 @@ class HFTService {
     const takeProfitPrice = signal === "BUY" ? price * (1 + effectiveTakeProfit) : price * (1 - effectiveTakeProfit);
     
     try {
+      // 🔥 RESERVA O CAPITAL
       const capitalRequest = await this.requestCapital(estimatedCost, `Trade: ${signal} ${symbol}`);
       
       if (!capitalRequest.success) {
@@ -493,6 +576,7 @@ class HFTService {
         return null;
       }
       
+      // EXECUTA A ORDEM (NÃO RESERVA NOVAMENTE)
       const order = await exchange.placeOrder(symbol, signal, qty, price, this.agentId);
       
       const trade = {
@@ -573,11 +657,10 @@ class HFTService {
           });
         }
         
-        if (trade.estimatedCost) {
-          const returnedAmount = trade.estimatedCost + (trade.pnl || 0);
-          if (returnedAmount !== 0) {
-            this.returnCapital(returnedAmount, `Trade closed: ${trade.result}`);
-          }
+        // ✅ DEVOLVE TODO O CAPITAL (investido + lucro/prejuízo)
+        const totalReturn = trade.estimatedCost + (trade.pnl || 0);
+        if (totalReturn !== 0) {
+          this.returnCapital(totalReturn, `Trade closed: ${trade.result}`);
         }
         
         db.addTrade({
@@ -610,16 +693,15 @@ class HFTService {
       const indicators = this._calculateIndicators(symbol);
       if (!indicators) continue;
       
-      // 🔥 REMOVIDO: verificação de volatilidade mínima (volatility < 0.05)
-      // Agora o HFT opera mesmo em baixa volatilidade
-      
       const signal = this._generateSignal(symbol, indicators);
       if (!signal || signal.signal === "HOLD") continue;
       
       const hasOpenTrade = this.activeTrades.some(t => t.symbol === symbol);
       if (hasOpenTrade) continue;
       
-      await this._executeTrade(signal.signal, symbol, indicators.currentPrice, signal.confidence);
+      // 🔥 EMITE SINAL PRÓPRIO PARA O TRADEEXECUTOR
+      const reasoning = `${signal.strategy} detectou oportunidade: ${signal.signal === "BUY" ? "compra" : "venda"} com ${signal.confidence}% confiança`;
+      this._emitOwnSignal(signal.signal, symbol, signal.confidence, signal.strategy, reasoning);
     }
   }
   
