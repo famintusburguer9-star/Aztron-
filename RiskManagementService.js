@@ -68,7 +68,8 @@ class RiskManagementService {
       errors.push(`Position size too large for ${agentId}. Max: $${(riskDollar * 20).toFixed(2)}`);
     }
     
-    const bal = exchange.getBalance();
+    // ✅ CORRETO - passa o agentId para o getBalance
+    const bal = exchange.getBalance(agentId);
     if (bal.USDT < notionalValue * 0.05) {
       errors.push("Insufficient USDT balance in exchange");
     }
@@ -86,7 +87,8 @@ class RiskManagementService {
 
   calculatePositionSize(symbol, price, stopLossPercent, agentId = "trend", confidence = 70) {
     const cfg = db.getConfig();
-    const bal = exchange.getBalance();
+    // ✅ CORRETO - passa o agentId para o getBalance
+    const bal = exchange.getBalance(agentId);
     const agentCapital = this.getAgentCapital(agentId);
     const agentConfig = this.agentConfigs[agentId] || this.agentConfigs.trend;
     const agentInvested = this.getAgentInvested(agentId);
@@ -236,7 +238,8 @@ class RiskManagementService {
   
   getStats() {
     const cfg = db.getConfig();
-    const totalEquity = exchange.getBalance().USDT || 0;
+    // ✅ CORRETO - passa um agentId padrão para o getBalance
+    const totalEquity = exchange.getBalance("trend").USDT || 0;
     
     const agentsStats = {};
     for (const agentId of Object.keys(this.agentConfigs)) {
