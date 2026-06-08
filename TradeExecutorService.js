@@ -350,27 +350,17 @@ class TradeExecutorService {
     const estimatedCost = positionInfo.qty * ticker.price;
     logger.info(`🔍 DEBUG: estimatedCost = ${estimatedCost} (sizeMultiplier: ${sizeMultiplier}x, trendMultiplier: ${trendMultiplier}x)`, { service: "TradeExecutor" });
     
-    const capitalRequest = await this._requestCapital(agent, estimatedCost, `Trade: ${side} ${symbol}`);
-    
-    if (!capitalRequest.success) {
-      logger.warn(`❌ Trade rejeitado pelo CapitalDistributor: ${capitalRequest.reason}`, { service: "TradeExecutor" });
-      
-      if (capitalRequest.reason === "INSUFFICIENT_BALANCE" || (capitalRequest.reason && capitalRequest.reason.includes("saldo"))) {
-        return { success: false, reason: "INSUFFICIENT_BALANCE" };
-      }
-      
-      return { success: false, reason: capitalRequest.reason };
-    }
+    // 🔥 REMOVA ESTA CHAMADA (já vai ser feita no ExchangeAdapter)
+    // const capitalRequest = await this._requestCapital(agent, estimatedCost, `Trade: ${side} ${symbol}`);
+    // A reserva será feita APENAS no ExchangeAdapter.placeOrder()
     
     const validation = risk.validateTrade(symbol, side, estimatedCost, agent);
     if (!validation.approved) {
-      this._returnCapital(agent, estimatedCost, `Validation failed: ${validation.errors.join("; ")}`);
       return { success: false, reason: validation.errors.join("; ") };
     }
 
     const slip = slippage.estimate(symbol, side, positionInfo.qty);
     if (!slip.acceptable) {
-      this._returnCapital(agent, estimatedCost, `Slippage too high: ${slip.estimated}%`);
       return { success: false, reason: `Slippage too high: ${slip.estimated}%` };
     }
 
@@ -452,7 +442,6 @@ class TradeExecutorService {
       
     } catch (err) {
       logger.error(`Trade execution failed: ${err.message}`, { service: "TradeExecutor" });
-      this._returnCapital(agent, estimatedCost, `Execution error: ${err.message}`);
       return { success: false, reason: err.message };
     }
   }
@@ -642,9 +631,10 @@ class TradeExecutorService {
             logger.warn(`❌ LOSS: ${trade.symbol} $${trade.pnl.toFixed(2)} (${trade.pnlPct.toFixed(2)}%) - ${trade.agent}`, { service: "TradeExecutor" });
           }
           
-          const netResult = trade.pnl;
-          if (netResult !== 0) {
-            this._returnCapital(trade.agent, netResult, `Trade closed: ${trade.result}`);
+          // ✅ CORRETO - devolve TODO o capital (investido + lucro/prejuízo)
+          const totalReturn = trade.estimatedCost + trade.pnl;
+          if (totalReturn !== 0) {
+            this._returnCapital(trade.agent, totalReturn, `Trade closed: ${trade.result}`);
           }
           
           eventBus.emit("trade", { action: "CLOSE", trade, reason: hitTP ? "TAKE_PROFIT" : "STOP_LOSS" });
