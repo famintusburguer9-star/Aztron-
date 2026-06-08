@@ -43,8 +43,15 @@ class DeepPatternRecognitionService {
       requireConfirmation: true,
       scanIntervalMs: 30000, // 30 segundos
       maxPatternsToKeep: 100,
-      shareInsights: true
+      shareInsights: true,
+      emitSignals: true,           // 🆕 Emitir sinais de trade
+      minConfidenceToTrade: 70,    // 🆕 Confiança mínima para gerar trade
+      cooldownMinutes: 30,         // 🆕 Cooldown entre trades do mesmo símbolo
+      positionSizeMultiplier: 1.0  // 🆕 Multiplicador de tamanho de posição
     };
+    
+    // 🆕 COOLDOWN PARA EVITAR MÚLTIPLOS SINAIS DO MESMO SÍMBOLO
+    this.lastTradeSignal = {};
     
     // 🆕 AJUSTES TEMPORÁRIOS DO LEARNING BRAIN
     this.tempConfidenceMultiplier = 1.0;
@@ -63,6 +70,13 @@ class DeepPatternRecognitionService {
     EventBus.on("improvement:broadcast", (improvement) => {
       if (improvement.affectedAgents?.includes(this.agentId)) {
         this.applyImprovement(improvement);
+      }
+    });
+    
+    // 🆕 ESCUTA RESULTADOS DE TRADES PARA APRENDER
+    EventBus.on("trade:closed", (tradeData) => {
+      if (tradeData.agent === this.agentId || tradeData.strategy?.includes("DEEP_PATTERN")) {
+        this._recordTradeResult(tradeData);
       }
     });
     
@@ -105,20 +119,23 @@ class DeepPatternRecognitionService {
         this.tempConfidenceMultiplier = Math.max(0.7, this.tempConfidenceMultiplier * 0.9);
         this.tempScanMultiplier = Math.max(0.5, this.tempScanMultiplier * 0.8);
         this.config.minConfidence = Math.max(50, this.config.minConfidence - 5);
+        this.config.minConfidenceToTrade = Math.max(60, this.config.minConfidenceToTrade - 5);
         
         // Ajusta o intervalo de scan
         if (this._scanInterval && this.isRunning) {
           clearInterval(this._scanInterval);
           const newInterval = Math.max(15000, this.config.scanIntervalMs * this.tempScanMultiplier);
           this._scanInterval = setInterval(() => this._scan(), newInterval);
-          logger.info(`⚡ DeepPattern aumentou sensibilidade: minConfiança=${this.config.minConfidence}%, scan=${newInterval}ms`, { service: "DeepPattern" });
+          logger.info(`⚡ DeepPattern aumentou sensibilidade: minConfiança=${this.config.minConfidence}%, minTrade=${this.config.minConfidenceToTrade}%, scan=${newInterval}ms`, { service: "DeepPattern" });
         }
         break;
         
       case "REDUZIR_RISCO":
         this.tempConfidenceMultiplier = Math.min(1.3, this.tempConfidenceMultiplier * 1.1);
         this.config.minConfidence = Math.min(80, this.config.minConfidence + 5);
-        logger.info(`📉 DeepPattern reduziu risco: minConfiança=${this.config.minConfidence}%`, { service: "DeepPattern" });
+        this.config.minConfidenceToTrade = Math.min(85, this.config.minConfidenceToTrade + 5);
+        this.config.positionSizeMultiplier = Math.max(0.5, this.config.positionSizeMultiplier * 0.8);
+        logger.info(`📉 DeepPattern reduziu risco: minConfiança=${this.config.minConfidence}%, minTrade=${this.config.minConfidenceToTrade}%, posSize=${this.config.positionSizeMultiplier}x`, { service: "DeepPattern" });
         break;
         
       case "REVISAR_TODAS_POSICOES_E_CONSIDERAR_CONTRA_TREND":
@@ -135,8 +152,56 @@ class DeepPatternRecognitionService {
       this.tempConfidenceMultiplier = 1.0;
       this.tempScanMultiplier = 1.0;
       this.config.minConfidence = 60;
+      this.config.minConfidenceToTrade = 70;
+      this.config.positionSizeMultiplier = 1.0;
       logger.info(`🔄 DeepPattern resetou ajustes temporários`, { service: "DeepPattern" });
     }, 3600000);
+  }
+
+  // 🆕 REGISTRA RESULTADO DE TRADE PARA APRENDIZADO
+  _recordTradeResult(tradeData) {
+    const isWin = tradeData.pnl > 0;
+    const pattern = tradeData.strategy?.replace("DEEP_PATTERN_", "") || "unknown";
+    
+    if (!this.performanceStats[pattern]) {
+      this.performanceStats[pattern] = {
+        totalDetections: 0,
+        totalTrades: 0,
+        winningTrades: 0,
+        losingTrades: 0,
+        totalPnl: 0,
+        bullishCount: 0,
+        bearishCount: 0,
+        avgConfidence: 0,
+        lastDetected: null
+      };
+    }
+    
+    const stats = this.performanceStats[pattern];
+    stats.totalTrades++;
+    if (isWin) {
+      stats.winningTrades++;
+    } else {
+      stats.losingTrades++;
+    }
+    stats.totalPnl += tradeData.pnl;
+    
+    const winRate = (stats.winningTrades / stats.totalTrades * 100).toFixed(1);
+    logger.info(`📊 DeepPattern performance do padrão ${pattern}: ${winRate}% win rate (${stats.winningTrades}/${stats.totalTrades})`, { service: "DeepPattern" });
+    
+    // Compartilha resultado com LearningBrain
+    EventBus.emit(`learning:${this.agentId}`, {
+      type: "trade_result",
+      content: `Padrão ${pattern} teve resultado ${isWin ? "positivo" : "negativo"}: $${Math.abs(tradeData.pnl).toFixed(2)}`,
+      confidence: isWin ? 0.7 : 0.5,
+      priority: isWin ? "normal" : "high",
+      data: {
+        pattern: pattern,
+        isWin: isWin,
+        pnl: tradeData.pnl,
+        winRate: parseFloat(winRate)
+      }
+    });
   }
 
   // 🆕 COMPARTILHA PADRÃO DETECTADO COM O LEARNING BRAIN
@@ -166,6 +231,86 @@ class DeepPatternRecognitionService {
       EventBus.emit(`learning:${this.agentId}`, insight);
       logger.info(`📤 DeepPattern compartilhou: ${insight.content.substring(0, 80)}`, { service: "DeepPattern" });
     }
+  }
+
+  // 🆕 EMITE SINAL DE TRADE BASEADO NO PADRÃO DETECTADO
+  emitTradeSignal(pattern) {
+    if (!this.config.emitSignals) return;
+    
+    // Verifica cooldown
+    const now = Date.now();
+    const lastSignal = this.lastTradeSignal[pattern.symbol] || 0;
+    const cooldownMs = this.config.cooldownMinutes * 60 * 1000;
+    
+    if (now - lastSignal < cooldownMs) {
+      logger.debug(`⏸️ DeepPattern em cooldown para ${pattern.symbol} - aguardando ${Math.ceil((cooldownMs - (now - lastSignal)) / 1000)}s`, { service: "DeepPattern" });
+      return;
+    }
+    
+    // Aplica multiplicador de confiança
+    let adjustedConfidence = Math.min(98, pattern.confidence * this.tempConfidenceMultiplier);
+    
+    // Só emite sinal se confiança for suficiente
+    if (adjustedConfidence < this.config.minConfidenceToTrade) {
+      logger.debug(`⏭️ DeepPattern ignorando padrão ${pattern.pattern} - confiança ${adjustedConfidence}% < ${this.config.minConfidenceToTrade}%`, { service: "DeepPattern" });
+      return;
+    }
+    
+    // Determina tipo de sinal baseado na implicação
+    let signalType = null;
+    if (pattern.implication === "BULLISH") {
+      signalType = "BUY";
+    } else if (pattern.implication === "BEARISH") {
+      signalType = "SELL";
+    } else {
+      return; // Padrões neutros não geram sinal
+    }
+    
+    // Calcula multiplicador de tamanho baseado na confiança
+    const confidenceBonus = (adjustedConfidence - 70) / 30; // 0 a 1
+    const sizeMultiplier = Math.min(1.5, this.config.positionSizeMultiplier * (0.7 + confidenceBonus * 0.8));
+    
+    const signal = {
+      type: signalType,
+      symbol: pattern.symbol,
+      confidence: Math.round(adjustedConfidence),
+      strategy: `DEEP_PATTERN_${pattern.pattern.replace(/ /g, "_").toUpperCase()}`,
+      agent: this.agentId,
+      status: "ACTIVE",
+      reason: `${pattern.pattern} detectado em ${pattern.timeframe} com ${pattern.confidence}% confiança. ${pattern.reasoning}`,
+      sizeMultiplier: parseFloat(sizeMultiplier.toFixed(2)),
+      priority: pattern.confidence > 80 ? "HIGH" : "NORMAL",
+      metadata: {
+        pattern: pattern.pattern,
+        timeframe: pattern.timeframe,
+        implication: pattern.implication,
+        confidence: pattern.confidence,
+        price: pattern.price,
+        reasoning: pattern.reasoning,
+        indicators: pattern.indicators
+      }
+    };
+    
+    // Registra o sinal
+    this.lastTradeSignal[pattern.symbol] = now;
+    
+    logger.info(`📢 [DeepPattern] EMITINDO SINAL: ${signal.type} ${signal.symbol} (conf: ${signal.confidence}%) - ${pattern.pattern}`, {
+      service: "DeepPattern",
+      signal: signal
+    });
+    
+    // Emite o sinal para o TradeExecutor
+    EventBus.emit("signal", signal);
+    
+    // Emite evento específico para monitoramento
+    EventBus.emit("deep:signal", {
+      ...signal,
+      pattern: pattern.pattern,
+      timeframe: pattern.timeframe,
+      timestamp: now
+    });
+    
+    return signal;
   }
 
   // 🆕 EMITE EVENTO DE PADRÃO PARA OUTROS SERVIÇOS
@@ -198,11 +343,12 @@ class DeepPatternRecognitionService {
     const effectiveInterval = Math.max(15000, this.config.scanIntervalMs * this.tempScanMultiplier);
     this._scanInterval = setInterval(() => this._scan(), effectiveInterval);
     
-    logger.info("DeepPatternRecognitionService started - analisando múltiplos timeframes", { 
+    logger.info("DeepPatternRecognitionService started - analisando múltiplos timeframes e emitindo sinais", { 
       service: "DeepPattern",
       scanInterval: `${effectiveInterval / 1000}s`,
       timeframes: TIMEFRAMES.join(", "),
-      minConfidence: `${this.config.minConfidence}%`
+      minConfidence: `${this.config.minConfidence}%`,
+      minTradeConfidence: `${this.config.minConfidenceToTrade}%`
     });
     
     return { success: true };
@@ -260,6 +406,9 @@ class DeepPatternRecognitionService {
         // EMITE EVENTO E COMPARTILHA
         this.emitPatternEvent(detection);
         this.sharePattern(detection);
+        
+        // 🆕 EMITE SINAL DE TRADE (NOVO!)
+        this.emitTradeSignal(detection);
         
         // Se o padrão tem alta confiança, tenta confirmar
         if (detection.confidence >= 70 && this.config.requireConfirmation) {
@@ -455,6 +604,10 @@ class DeepPatternRecognitionService {
         bullishCount: 0,
         bearishCount: 0,
         avgConfidence: 0,
+        totalTrades: 0,
+        winningTrades: 0,
+        losingTrades: 0,
+        totalPnl: 0,
         lastDetected: null
       };
     }
@@ -515,10 +668,14 @@ class DeepPatternRecognitionService {
     const stats = {};
     for (const [pattern, data] of Object.entries(this.performanceStats)) {
       const bullishRatio = data.totalDetections > 0 ? (data.bullishCount / data.totalDetections) * 100 : 0;
+      const winRate = data.totalTrades > 0 ? (data.winningTrades / data.totalTrades) * 100 : 0;
       stats[pattern] = {
         totalDetections: data.totalDetections,
         avgConfidence: Math.round(data.avgConfidence),
         bullishPercentage: Math.round(bullishRatio),
+        totalTrades: data.totalTrades || 0,
+        winRate: Math.round(winRate),
+        totalPnl: data.totalPnl || 0,
         lastDetected: data.lastDetected
       };
     }
@@ -536,24 +693,35 @@ class DeepPatternRecognitionService {
         BEARISH: this.detectedPatterns.filter(p => p.implication === "BEARISH").length,
         NEUTRAL: this.detectedPatterns.filter(p => p.implication === "NEUTRAL").length
       },
+      signalsEmitted: Object.values(this.lastTradeSignal).length,
       config: {
         minConfidence: this.config.minConfidence,
+        minConfidenceToTrade: this.config.minConfidenceToTrade,
         requireConfirmation: this.config.requireConfirmation,
-        scanIntervalMs: this.config.scanIntervalMs
+        scanIntervalMs: this.config.scanIntervalMs,
+        cooldownMinutes: this.config.cooldownMinutes,
+        emitSignals: this.config.emitSignals
       },
       tempMultipliers: {
         confidence: this.tempConfidenceMultiplier,
         scan: this.tempScanMultiplier
       },
       performanceStats: this.getPerformanceStats(),
-      lastScan: this.detectedPatterns[0]?.timestamp || null
+      lastScan: this.detectedPatterns[0]?.timestamp || null,
+      lastSignals: Object.entries(this.lastTradeSignal).slice(0, 5).map(([symbol, time]) => ({
+        symbol,
+        lastSignalAt: new Date(time).toISOString(),
+        secondsAgo: Math.floor((Date.now() - time) / 1000)
+      }))
     };
   }
 
   async switchToLiveMode() {
     logger.info("🔄 DeepPattern migrando para LIVE MODE...", { service: "DeepPattern" });
     this.config.minConfidence = 70;
-    logger.info("✅ DeepPattern agora opera em LIVE MODE com confiança mínima de 70%", { service: "DeepPattern" });
+    this.config.minConfidenceToTrade = 75;
+    this.config.cooldownMinutes = 60;
+    logger.info("✅ DeepPattern agora opera em LIVE MODE com confiança mínima de 70% e trade com 75%", { service: "DeepPattern" });
     return { success: true };
   }
 }
