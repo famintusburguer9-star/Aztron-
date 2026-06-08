@@ -272,18 +272,8 @@ class ExchangeAdapterService {
         }
       }
       
-      const capitalResult = await new Promise((resolve) => {
-        capitalDistributor.handleRequest({
-          agentId: agentId,
-          amount: cost,
-          reason: `Trade: ${side} ${symbol}`,
-          callback: resolve
-        });
-      });
-      
-      if (!capitalResult.success) {
-        throw new Error(`Failed to reserve capital: ${capitalResult.reason}`);
-      }
+      // ❌ BLOCO REMOVIDO - NÃO RESERVA CAPITAL AQUI MAIS
+      // A reserva já foi feita antes (ou será feita pelo CapitalDistributor)
       
       const newBalance = currentBalance - cost;
       
@@ -314,8 +304,11 @@ class ExchangeAdapterService {
     throw new Error("Live trading not implemented — configure API keys and set mode to LIVE");
   }
 
-  getBalance(agentId = "trend") {
-    return { USDT: this.getAgentBalance(agentId) };
+  // ✅ CORRETO - usa o agente passado como parâmetro
+  getBalance(agentId) {
+    // Se não veio agentId, usa o padrão
+    const id = agentId || "trend";
+    return { USDT: this.getAgentBalance(id) };
   }
 
   async getTotalBalance(agentId = "trend") {
