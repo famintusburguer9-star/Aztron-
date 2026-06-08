@@ -45,6 +45,9 @@ const learningBrain = require("./LearningBrainService");
 // ==================== ROBÔ DE ARBITRAGEM ====================
 const arbitrageService = require("./ArbitrageService");
 
+// ==================== 🆕 SENTIMENT AGENT SERVICE ====================
+const sentimentAgent = require("./SentimentAgentService");
+
 const PORT = process.env.PORT || 3001;
 const app = express();
 const server = http.createServer(app);
@@ -119,6 +122,99 @@ app.get("/api/memory/stats", (_req, res) => res.json(memoryService.getStats()));
 
 // ─── SENTIMENT (rota básica) ──────────────────────────────────────────────────
 app.get("/api/sentiment", (_req, res) => res.json(sentiment.getSentiment()));
+
+// ─── SENTIMENT AGENT ROUTES ───────────────────────────────────────────────────
+
+// Status do Sentiment Agent
+app.get("/api/sentiment-agent/status", (_req, res) => {
+  res.json(sentimentAgent.getStats());
+});
+
+// Iniciar Sentiment Agent
+app.post("/api/sentiment-agent/start", async (_req, res) => {
+  try {
+    const result = sentimentAgent.start();
+    res.json({ success: true, ...result });
+  } catch (error) {
+    logger.error("SentimentAgent start error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Parar Sentiment Agent
+app.post("/api/sentiment-agent/stop", async (_req, res) => {
+  try {
+    const result = sentimentAgent.stop();
+    res.json({ success: true, ...result });
+  } catch (error) {
+    logger.error("SentimentAgent stop error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Pausar Sentiment Agent
+app.post("/api/sentiment-agent/pause", async (_req, res) => {
+  try {
+    const result = sentimentAgent.pause();
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Retomar Sentiment Agent
+app.post("/api/sentiment-agent/resume", async (_req, res) => {
+  try {
+    const result = sentimentAgent.resume();
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Configurar Sentiment Agent
+app.post("/api/sentiment-agent/config", (req, res) => {
+  try {
+    const result = sentimentAgent.updateConfig(req.body);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Forçar sinal manual
+app.post("/api/sentiment-agent/force-signal", (req, res) => {
+  try {
+    const { symbol, type, confidence, reason } = req.body;
+    if (!symbol || !type) {
+      return res.status(400).json({ error: "symbol and type are required" });
+    }
+    const result = sentimentAgent.forceSignal(symbol, type, confidence || 75, reason);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Recomendação atual para um símbolo
+app.get("/api/sentiment-agent/recommendation/:symbol", (req, res) => {
+  try {
+    const result = sentimentAgent.getCurrentRecommendation(req.params.symbol);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Estatísticas do Sentiment Agent
+app.get("/api/sentiment-agent/stats", (_req, res) => {
+  try {
+    const stats = sentimentAgent.getStats();
+    res.json(stats);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // ─── SENTIMENT ADVANCED (Trend Analysis com IA) ───────────────────────────────
 app.get("/api/sentiment/analysis", async (req, res) => {
@@ -625,6 +721,10 @@ io.on("connection", (socket) => {
   const arbitrageHandler = (opp) => socket.emit("arbitrage:opportunity", opp);
   const capitalUpdateHandler = (data) => socket.emit("capital:update", data);
   const learningInsightHandler = (insight) => socket.emit("learning:insight", insight);
+  
+  // 🆕 SENTIMENT AGENT WebSocket events
+  const sentimentAgentSignalHandler = (signal) => socket.emit("sentiment-agent:signal", signal);
+  const sentimentAgentExtremeHandler = (data) => socket.emit("sentiment-agent:extreme", data);
 
   eventBus.on("tick", tickHandler);
   eventBus.on("signal", signalHandler);
@@ -641,6 +741,8 @@ io.on("connection", (socket) => {
   eventBus.on("arbitrage:opportunity", arbitrageHandler);
   eventBus.on("capital:update", capitalUpdateHandler);
   eventBus.on("learning:insight", learningInsightHandler);
+  eventBus.on("sentiment-agent:signal", sentimentAgentSignalHandler);
+  eventBus.on("sentiment-agent:extreme", sentimentAgentExtremeHandler);
 
   socket.on("disconnect", () => {
     eventBus.off("tick", tickHandler);
@@ -658,6 +760,8 @@ io.on("connection", (socket) => {
     eventBus.off("arbitrage:opportunity", arbitrageHandler);
     eventBus.off("capital:update", capitalUpdateHandler);
     eventBus.off("learning:insight", learningInsightHandler);
+    eventBus.off("sentiment-agent:signal", sentimentAgentSignalHandler);
+    eventBus.off("sentiment-agent:extreme", sentimentAgentExtremeHandler);
     logger.info(`WebSocket disconnected: ${socket.id}`, { service: "WebSocket" });
   });
 });
@@ -690,12 +794,16 @@ async function main() {
   logger.info("🚀 Inicializando ArbitrageService...", { service: "Startup" });
   await arbitrageService.initialize();
   
-  // 7. ORCHESTRATOR (inicia os serviços restantes)
+  // 7. SENTIMENT AGENT SERVICE (inicializa e começa a gerar sinais)
+  logger.info("📊 Inicializando SentimentAgentService...", { service: "Startup" });
+  sentimentAgent.start();
+  
+  // 8. ORCHESTRATOR (inicia os serviços restantes)
   logger.info("🎮 Inicializando Orchestrator...", { service: "Startup" });
   await orchestrator.init();
   await orchestrator.start();
   
-  // 8. VERIFICAÇÃO FINAL
+  // 9. VERIFICAÇÃO FINAL
   const config = db.getConfig();
   logger.info(`📊 Configuração atual: Modo=${config.mode}, Exchange=${config.exchange}`, { service: "Startup" });
   
@@ -706,6 +814,7 @@ async function main() {
     logger.info(`🧠 Learning Brain: ${learningBrain.isRunning ? "✅ rodando" : "❌ parado"}`, { service: "Startup" });
     logger.info(`🤖 HFT: ${hft.running ? "✅ rodando" : "❌ parado"}`, { service: "Startup" });
     logger.info(`🚀 Arbitrage: ${arbitrageService.isRunning ? "✅ rodando" : "❌ parado"}`, { service: "Startup" });
+    logger.info(`📊 Sentiment Agent: ${sentimentAgent.isRunning ? "✅ rodando" : "❌ parado"}`, { service: "Startup" });
     logger.info(`🎮 Orchestrator: ${orchestrator.running ? "✅ rodando" : "❌ parado"}`, { service: "Startup" });
     logger.info("===============================================", { service: "Startup" });
   }, 3000);
@@ -718,6 +827,7 @@ async function main() {
     logger.info(`🧠 Learning Brain ready`, { service: "LearningBrain" });
     logger.info(`🤖 HFT Trading Engine ready`, { service: "HFT" });
     logger.info(`🚀 Arbitrage Service ready`, { service: "ArbitrageService" });
+    logger.info(`📊 Sentiment Agent ready - Gerando sinais de trade baseados em Fear & Greed`, { service: "SentimentAgent" });
     logger.info(`✅ TOTAL DE SERVIÇOS INTEGRADOS`, { service: "Orchestrator" });
   });
 }
