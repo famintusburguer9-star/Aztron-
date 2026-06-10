@@ -12,13 +12,13 @@ const INITIAL_PRICES = {
   XRPUSDT: 0.52,
 };
 
-// Volatilidade anual aproximada por par (%)
-const VOLATILITY = {
-  BTCUSDT: 0.45,
-  ETHUSDT: 0.55,
-  BNBUSDT: 0.50,
-  SOLUSDT: 0.70,
-  XRPUSDT: 0.60,
+// 🔥 VOLATILIDADE DIÁRIA REALISTA (%)
+const DAILY_VOLATILITY = {
+  BTCUSDT: 2.5,    // 2.5% ao dia
+  ETHUSDT: 3.5,    // 3.5% ao dia
+  BNBUSDT: 3.0,    // 3.0% ao dia
+  SOLUSDT: 5.0,    // 5.0% ao dia
+  XRPUSDT: 4.0,    // 4.0% ao dia
 };
 
 // Correlação entre pares
@@ -38,24 +38,24 @@ class ExchangeAdapterService {
     this.prices = {};
     this.tradeHistory = [];
     
-    // Controle de oportunidades de arbitragem (MAIS LENTO)
+    // Controle de oportunidades de arbitragem
     this._lastArbitrageCheck = {};
-    this._arbitrageCooldown = 120000; // 2 MINUTOS
+    this._arbitrageCooldown = 60000; // 1 MINUTO
     
-    // 🔥 CONTROLE DE TENDÊNCIA DE MERCADO (para o Trend)
-    this._marketTrend = "sideways"; // bullish, bearish, sideways
-    this._trendStrength = 0; // 0 a 100
+    // 🔥 CONTROLE DE TENDÊNCIA DE MERCADO
+    this._marketTrend = "sideways";
+    this._trendStrength = 0;
     this._trendUpdateTime = 0;
     
-    // 🆕 SIMULAÇÃO PARA DEEP PATTERN (Candles/velas)
-    this.candles = {}; // Armazena velas por símbolo
+    // Controle de tendência direcional
+    this._directionalTrend = 0; // -1 bearish, 0 sideways, 1 bullish
+    this._trendMomentum = 0;
+    
+    // 🆕 SIMULAÇÕES
+    this.candles = {};
     this._lastCandleUpdate = {};
-    
-    // 🆕 SIMULAÇÃO PARA SENTIMENT (Notícias/humor)
-    this._sentimentScores = {}; // -1 a 1
+    this._sentimentScores = {};
     this._lastSentimentUpdate = {};
-    
-    // 🆕 SIMULAÇÃO PARA ARBITRAGEM (Múltiplas exchanges)
     this.multiExchangePrices = {
       binance: {},
       bybit: {},
@@ -74,34 +74,36 @@ class ExchangeAdapterService {
         high24h: price,
         low24h: price,
         change24h: 0,
+        change5m: 0,
         timestamp: Date.now()
       };
       this._lastArbitrageCheck[symbol] = 0;
-      
-      // Inicializa candles vazios
       this.candles[symbol] = [];
       this._lastCandleUpdate[symbol] = Date.now();
-      
-      // Inicializa sentiment
       this._sentimentScores[symbol] = 0;
       this._lastSentimentUpdate[symbol] = Date.now();
       
-      // Inicializa preços multi-exchange
-      this.multiExchangePrices.binance[symbol] = price;
-      this.multiExchangePrices.bybit[symbol] = price;
-      this.multiExchangePrices.okx[symbol] = price;
-      this.multiExchangePrices.kucoin[symbol] = price;
+      // Inicializa preços multi-exchange com spreads realistas
+      const spreadBinance = (Math.random() - 0.5) * 0.001; // 0.1% max
+      const spreadBybit = (Math.random() - 0.5) * 0.001;
+      const spreadOkx = (Math.random() - 0.5) * 0.001;
+      const spreadKucoin = (Math.random() - 0.5) * 0.001;
+      
+      this.multiExchangePrices.binance[symbol] = price * (1 + spreadBinance);
+      this.multiExchangePrices.bybit[symbol] = price * (1 + spreadBybit);
+      this.multiExchangePrices.okx[symbol] = price * (1 + spreadOkx);
+      this.multiExchangePrices.kucoin[symbol] = price * (1 + spreadKucoin);
     }
     
     this._startRealisticSimulation();
-    this._startCandleSimulation();    // 🆕 Para Deep Pattern
-    this._startSentimentSimulation(); // 🆕 Para Sentiment Agent
+    this._startCandleSimulation();
+    this._startSentimentSimulation();
     
-    logger.info("ExchangeAdapterService initialized", { 
+    logger.info("ExchangeAdapterService initialized with REALISTIC volatility", { 
       service: "ExchangeAdapter", 
       exchange: this.exchange, 
       mode: this.mode,
-      status: "Com simulações para Arbitrage, Deep Pattern e Sentiment"
+      dailyVolatility: DAILY_VOLATILITY
     });
   }
 
@@ -111,40 +113,29 @@ class ExchangeAdapterService {
     return balance;
   }
 
-  // 🔥 Obtém tendência atual do mercado
   getMarketTrend() {
     return {
       trend: this._marketTrend,
       strength: this._trendStrength,
+      directional: this._directionalTrend,
+      momentum: this._trendMomentum,
       timestamp: this._trendUpdateTime
     };
   }
 
-  // 🆕 PARA ARBITRAGE: Obtém preços de múltiplas exchanges
   getMultiExchangePrices(symbol) {
-    const basePrice = this.prices[symbol]?.price || INITIAL_PRICES[symbol];
-    
-    // Simula spreads realísticos entre exchanges (0.05% a 0.5%)
-    const spreadBinance = (Math.random() - 0.5) * 0.005;
-    const spreadBybit = (Math.random() - 0.5) * 0.005;
-    const spreadOkx = (Math.random() - 0.5) * 0.005;
-    const spreadKucoin = (Math.random() - 0.5) * 0.005;
-    
     return {
-      binance: basePrice * (1 + spreadBinance),
-      bybit: basePrice * (1 + spreadBybit),
-      okx: basePrice * (1 + spreadOkx),
-      kucoin: basePrice * (1 + spreadKucoin)
+      binance: this.multiExchangePrices.binance[symbol] || this.prices[symbol]?.price || INITIAL_PRICES[symbol],
+      bybit: this.multiExchangePrices.bybit[symbol] || this.prices[symbol]?.price || INITIAL_PRICES[symbol],
+      okx: this.multiExchangePrices.okx[symbol] || this.prices[symbol]?.price || INITIAL_PRICES[symbol],
+      kucoin: this.multiExchangePrices.kucoin[symbol] || this.prices[symbol]?.price || INITIAL_PRICES[symbol]
     };
   }
 
-  // 🆕 PARA DEEP PATTERN: Obtém candles/velas históricas
   getCandles(symbol, interval = "1h", limit = 100) {
     if (!this.candles[symbol] || this.candles[symbol].length === 0) {
       this._generateInitialCandles(symbol, limit);
     }
-    
-    // Retorna as últimas 'limit' candles
     return this.candles[symbol].slice(-limit);
   }
 
@@ -153,21 +144,20 @@ class ExchangeAdapterService {
     const candles = [];
     let currentPrice = basePrice;
     const now = Date.now();
+    const dailyVol = DAILY_VOLATILITY[symbol] || 2.0;
     
     for (let i = count; i > 0; i--) {
-      const volatility = VOLATILITY[symbol] || 0.5;
-      const change = (Math.random() - 0.5) * (volatility / 10);
+      // Volatilidade por hora (dailyVol / 24)
+      const hourlyVol = dailyVol / 24 / 100;
+      const change = (Math.random() - 0.5) * hourlyVol * 2;
       const open = currentPrice;
       const close = currentPrice * (1 + change);
-      const high = Math.max(open, close) * (1 + Math.random() * 0.005);
-      const low = Math.min(open, close) * (1 - Math.random() * 0.005);
+      const high = Math.max(open, close) * (1 + Math.random() * hourlyVol);
+      const low = Math.min(open, close) * (1 - Math.random() * hourlyVol);
       
       candles.push({
-        timestamp: now - (i * 3600000), // 1 hora cada
-        open,
-        high,
-        low,
-        close,
+        timestamp: now - (i * 3600000),
+        open, high, low, close,
         volume: Math.random() * 1000000
       });
       
@@ -178,14 +168,12 @@ class ExchangeAdapterService {
   }
 
   _startCandleSimulation() {
-    // Atualiza candles a cada minuto (para Deep Pattern ter dados frescos)
     setInterval(() => {
       for (const [symbol, data] of Object.entries(this.prices)) {
         const lastCandle = this.candles[symbol]?.[this.candles[symbol].length - 1];
         const now = Date.now();
         const lastUpdate = this._lastCandleUpdate[symbol] || now;
         
-        // Se passou 1 hora, cria nova candle
         if (now - lastUpdate >= 3600000) {
           const currentPrice = data.price;
           const lastClose = lastCandle?.close || currentPrice;
@@ -204,113 +192,72 @@ class ExchangeAdapterService {
           if (this.candles[symbol].length > 500) this.candles[symbol].shift();
           this._lastCandleUpdate[symbol] = now;
           
-          // Emite evento para Deep Pattern
-          eventBus.emit("market:candle", {
-            symbol,
-            candle: newCandle,
-            interval: "1h"
-          });
+          eventBus.emit("market:candle", { symbol, candle: newCandle, interval: "1h" });
         }
       }
-    }, 60000); // Verifica a cada minuto
+    }, 60000);
   }
 
-  // 🆕 PARA SENTIMENT: Obtém sentimento do mercado
   getMarketSentiment(symbol) {
     const score = this._sentimentScores[symbol] || 0;
-    
-    // Determina sentimento baseado no score (-1 a 1)
     let sentiment = "neutral";
     if (score > 0.3) sentiment = "bullish";
     if (score > 0.6) sentiment = "very_bullish";
     if (score < -0.3) sentiment = "bearish";
     if (score < -0.6) sentiment = "very_bearish";
     
-    return {
-      symbol,
-      sentiment,
-      score: score,
-      confidence: Math.abs(score),
-      sources: {
-        news: score * (0.3 + Math.random() * 0.3),
-        social: score * (0.2 + Math.random() * 0.3),
-        technical: score * (0.4 + Math.random() * 0.2)
-      },
-      timestamp: Date.now()
-    };
+    return { symbol, sentiment, score: score, confidence: Math.abs(score), timestamp: Date.now() };
   }
 
   _startSentimentSimulation() {
-    // Atualiza sentimento a cada 30 segundos
     setInterval(() => {
       for (const symbol of Object.keys(INITIAL_PRICES)) {
-        const priceChange = this.prices[symbol]?.change24h || 0;
+        const priceChange = this.prices[symbol]?.change5m || 0;
         
-        // Sentimento baseado no movimento de preço
         let baseSentiment = 0;
-        if (priceChange > 1) baseSentiment = 0.4;
-        else if (priceChange > 0.5) baseSentiment = 0.2;
-        else if (priceChange < -1) baseSentiment = -0.4;
-        else if (priceChange < -0.5) baseSentiment = -0.2;
+        if (priceChange > 0.3) baseSentiment = 0.5;
+        else if (priceChange > 0.1) baseSentiment = 0.2;
+        else if (priceChange < -0.3) baseSentiment = -0.5;
+        else if (priceChange < -0.1) baseSentiment = -0.2;
         
-        // Adiciona ruído aleatório
-        const noise = (Math.random() - 0.5) * 0.3;
+        const noise = (Math.random() - 0.5) * 0.2;
         const newSentiment = Math.max(-1, Math.min(1, baseSentiment + noise));
-        
-        // Suaviza a mudança (não muda muito rápido)
         const oldSentiment = this._sentimentScores[symbol] || 0;
-        this._sentimentScores[symbol] = oldSentiment * 0.7 + newSentiment * 0.3;
+        this._sentimentScores[symbol] = oldSentiment * 0.8 + newSentiment * 0.2;
         
-        // Emite evento para Sentiment Agent
-        eventBus.emit("market:sentiment", {
-          symbol,
-          sentiment: this.getMarketSentiment(symbol),
-          timestamp: Date.now()
-        });
+        eventBus.emit("market:sentiment", { symbol, sentiment: this.getMarketSentiment(symbol), timestamp: Date.now() });
       }
     }, 30000);
   }
 
-  // 🆕 PARA ARBITRAGE: Obtém oportunidade com múltiplas exchanges
   async getMultiExchangeArbitrage(symbol = "BTCUSDT") {
     try {
       const now = Date.now();
       const lastCheck = this._lastArbitrageCheck[symbol] || 0;
       
-      // Arbitrage mais frequente agora (30 segundos)
-      if (now - lastCheck < 30000) return null;
+      if (now - lastCheck < 60000) return null;
       this._lastArbitrageCheck[symbol] = now;
       
       const prices = this.getMultiExchangePrices(symbol);
       const exchanges = Object.keys(prices);
       
-      // Encontra menor preço (compra) e maior preço (venda)
       let buyExchange = exchanges[0];
       let sellExchange = exchanges[0];
       let lowestPrice = prices[buyExchange];
       let highestPrice = prices[sellExchange];
       
       for (const ex of exchanges) {
-        if (prices[ex] < lowestPrice) {
-          lowestPrice = prices[ex];
-          buyExchange = ex;
-        }
-        if (prices[ex] > highestPrice) {
-          highestPrice = prices[ex];
-          sellExchange = ex;
-        }
+        if (prices[ex] < lowestPrice) { lowestPrice = prices[ex]; buyExchange = ex; }
+        if (prices[ex] > highestPrice) { highestPrice = prices[ex]; sellExchange = ex; }
       }
       
       const spreadPercent = ((highestPrice - lowestPrice) / lowestPrice) * 100;
       
-      // Só retorna oportunidade se spread for significativo (> 0.15%)
-      if (spreadPercent < 0.15) return null;
+      // 🔥 SPREAD MÍNIMO REALISTA: 0.05% (arbitrage real)
+      if (spreadPercent < 0.08) return null;
       
-      // 70% de chance de ser oportunidade realista
-      const isValid = Math.random() < 0.7;
-      if (!isValid) return null;
-      
-      logger.info(`💰 Oportunidade de arbitragem multi-exchange em ${symbol}: spread ${spreadPercent.toFixed(3)}% (comprar ${buyExchange} @ $${lowestPrice.toFixed(2)} | vender ${sellExchange} @ $${highestPrice.toFixed(2)})`);
+      // 🔥 LIMITA SPREAD MÁXIMO SIMULADO: 0.3%
+      const realisticSpread = Math.min(0.3, spreadPercent);
       
       return {
         symbol,
@@ -318,18 +265,17 @@ class ExchangeAdapterService {
         sellExchange,
         buyPrice: lowestPrice,
         sellPrice: highestPrice,
-        spreadPercent: parseFloat(spreadPercent.toFixed(4)),
-        netSpread: parseFloat((spreadPercent - 0.05).toFixed(4)), // depois de taxas
-        isProfitable: spreadPercent > 0.2,
+        spreadPercent: parseFloat(realisticSpread.toFixed(4)),
+        netSpread: parseFloat((realisticSpread - 0.06).toFixed(4)),
+        isProfitable: realisticSpread > 0.1,
         timestamp: Date.now()
       };
     } catch (error) {
-      logger.error(`Erro na análise de arbitragem multi-exchange: ${error.message}`);
+      logger.error(`Erro na arbitragem: ${error.message}`);
       return null;
     }
   }
 
-  // Mantém método antigo para compatibilidade
   async getArbitrageOpportunity(symbol = "BTCUSDT") {
     return this.getMultiExchangeArbitrage(symbol);
   }
@@ -339,27 +285,36 @@ class ExchangeAdapterService {
       const now = new Date();
       const hour = now.getUTCHours();
       
-      let timeFactor = 0.5;
-      if (hour >= 13 && hour <= 22) timeFactor = 1.5;
-      else if (hour >= 8 && hour <= 17) timeFactor = 1.2;
-      else if (hour >= 0 && hour <= 8) timeFactor = 0.8;
+      // 🔥 FATOR DE TEMPO (mais volatilidade em horário de mercado)
+      let timeFactor = 0.7;
+      if (hour >= 13 && hour <= 17) timeFactor = 1.5;  // NY session
+      else if (hour >= 8 && hour <= 12) timeFactor = 1.2; // London session
+      else if (hour >= 0 && hour <= 7) timeFactor = 0.6; // Asia session
       
-      const marketTrend = (Math.random() - 0.5) * 0.0003 * timeFactor;
+      // 🔥 TENDÊNCIA DIRECIONAL (muda a cada poucos minutos)
+      if (Math.random() < 0.02) {
+        this._directionalTrend = (Math.random() - 0.5) * 1.5;
+        this._trendMomentum = (Math.random() - 0.5) * 0.5;
+      }
       
-      let avgChange = 0;
+      const marketDrift = (this._directionalTrend * 0.0001) + (this._trendMomentum * 0.00005);
+      
+      let totalChange = 0;
       let count = 0;
       
       for (const [symbol, data] of Object.entries(this.prices)) {
-        const vol = VOLATILITY[symbol] || 0.5;
+        const dailyVol = DAILY_VOLATILITY[symbol] / 100;
         const correlation = CORRELATION[symbol] || 0.5;
         
-        const specificNoise = (Math.random() - 0.5) * 0.0004 * timeFactor * (1 - correlation);
-        const deltaPercent = (marketTrend * correlation) + specificNoise;
-        const dailyVol = vol / Math.sqrt(365);
-        const finalDelta = deltaPercent * dailyVol * timeFactor;
+        // 🔥 VOLATILIDADE REALISTA (movimentos de 0.1% a 1% por update)
+        const volatilityFactor = dailyVol * timeFactor / Math.sqrt(24 * 60 / 2); // para cada 2 segundos
+        const specificNoise = (Math.random() - 0.5) * volatilityFactor;
+        const driftComponent = marketDrift * correlation;
+        const deltaPercent = driftComponent + specificNoise;
         
-        let newPrice = data.price * (1 + finalDelta);
+        let newPrice = data.price * (1 + deltaPercent);
         
+        // Limites realistas
         if (symbol === 'BTCUSDT') newPrice = Math.max(30000, Math.min(150000, newPrice));
         if (symbol === 'ETHUSDT') newPrice = Math.max(1500, Math.min(8000, newPrice));
         if (symbol === 'BNBUSDT') newPrice = Math.max(200, Math.min(1200, newPrice));
@@ -367,15 +322,24 @@ class ExchangeAdapterService {
         if (symbol === 'XRPUSDT') newPrice = Math.max(0.3, Math.min(3, newPrice));
         
         const priceChange = ((newPrice - data.price) / data.price) * 100;
-        avgChange += priceChange;
+        totalChange += priceChange;
         count++;
         
+        // 🔥 ATUALIZA INDICADORES
+        const oldPrice = data.price;
         data.price = newPrice;
-        data.bid = newPrice * 0.999;
-        data.ask = newPrice * 1.001;
+        data.bid = newPrice * 0.9995;
+        data.ask = newPrice * 1.0005;
         
         if (newPrice > data.high24h) data.high24h = newPrice;
         if (newPrice < data.low24h) data.low24h = newPrice;
+        
+        // Variação em 5 minutos (12 ticks de 2s = 24s, aproximado)
+        if (!data._price5mAgo) data._price5mAgo = newPrice;
+        if (Math.random() < 0.05) {
+          data.change5m = ((newPrice - data._price5mAgo) / data._price5mAgo) * 100;
+          data._price5mAgo = newPrice;
+        }
         
         const price24hAgo = data.price24hAgo || newPrice;
         data.change24h = ((newPrice - price24hAgo) / price24hAgo) * 100;
@@ -386,24 +350,24 @@ class ExchangeAdapterService {
           data.lastReset = Date.now();
         }
         
-        // 🆕 Atualiza preços multi-exchange
-        const multiSpread = (Math.random() - 0.5) * 0.003;
-        this.multiExchangePrices.binance[symbol] = newPrice * (1 + multiSpread);
-        this.multiExchangePrices.bybit[symbol] = newPrice * (1 + (Math.random() - 0.5) * 0.003);
-        this.multiExchangePrices.okx[symbol] = newPrice * (1 + (Math.random() - 0.5) * 0.003);
-        this.multiExchangePrices.kucoin[symbol] = newPrice * (1 + (Math.random() - 0.5) * 0.003);
+        // 🔥 SIMULA PREÇOS MULTI-EXCHANGE (spreads pequenos)
+        this.multiExchangePrices.binance[symbol] = newPrice * (1 + (Math.random() - 0.5) * 0.0006);
+        this.multiExchangePrices.bybit[symbol] = newPrice * (1 + (Math.random() - 0.5) * 0.0006);
+        this.multiExchangePrices.okx[symbol] = newPrice * (1 + (Math.random() - 0.5) * 0.0006);
+        this.multiExchangePrices.kucoin[symbol] = newPrice * (1 + (Math.random() - 0.5) * 0.0006);
       }
       
+      // 🔥 ATUALIZA TENDÊNCIA DO MERCADO
       if (count > 0) {
-        const avgMarketChange = avgChange / count;
+        const avgMarketChange = totalChange / count;
         this._trendUpdateTime = Date.now();
         
-        if (avgMarketChange > 0.05) {
+        if (avgMarketChange > 0.03) {
           this._marketTrend = "bullish";
-          this._trendStrength = Math.min(100, Math.abs(avgMarketChange) * 100);
-        } else if (avgMarketChange < -0.05) {
+          this._trendStrength = Math.min(100, Math.abs(avgMarketChange) * 200);
+        } else if (avgMarketChange < -0.03) {
           this._marketTrend = "bearish";
-          this._trendStrength = Math.min(100, Math.abs(avgMarketChange) * 100);
+          this._trendStrength = Math.min(100, Math.abs(avgMarketChange) * 200);
         } else {
           this._marketTrend = "sideways";
           this._trendStrength = Math.abs(avgMarketChange) * 100;
@@ -414,24 +378,18 @@ class ExchangeAdapterService {
       eventBus.emit("market:trend", {
         trend: this._marketTrend,
         strength: this._trendStrength,
+        directional: this._directionalTrend,
         timestamp: Date.now()
       });
       
-      // 🆕 Emite evento de preços multi-exchange para Arbitrage
-      eventBus.emit("market:multiExchange", {
-        prices: this.multiExchangePrices,
-        timestamp: Date.now()
-      });
+      eventBus.emit("market:multiExchange", { prices: this.multiExchangePrices, timestamp: Date.now() });
       
-    }, 2000);
+    }, 2000); // Atualiza a cada 2 segundos
   }
 
   async getPrice(symbol) {
     const ticker = this.prices[symbol];
-    if (ticker && ticker.price) {
-      return ticker.price;
-    }
-    return INITIAL_PRICES[symbol] || 100;
+    return ticker?.price || INITIAL_PRICES[symbol] || 100;
   }
 
   getTicker(symbol) { 
@@ -463,29 +421,20 @@ class ExchangeAdapterService {
       
       const currentBalance = this.getAgentBalance(agentId);
       
-      if (side === "BUY") {
-        if (currentBalance < cost) {
-          throw new Error(`Insufficient balance for ${agentId}. Need $${cost.toFixed(2)}, have $${currentBalance.toFixed(2)}`);
-        }
+      if (side === "BUY" && currentBalance < cost) {
+        throw new Error(`Insufficient balance for ${agentId}. Need $${cost.toFixed(2)}, have $${currentBalance.toFixed(2)}`);
       }
       
       const newBalance = currentBalance - cost;
       
-      logger.info(`[PAPER] ${side} ${qty.toFixed(6)} ${symbol} @ $${execPrice.toFixed(2)} | Total: $${cost.toFixed(2)} | Agent: ${agentId} | Balance: $${currentBalance.toFixed(2)} → $${newBalance.toFixed(2)}`);
+      logger.info(`[PAPER] ${side} ${qty.toFixed(6)} ${symbol} @ $${execPrice.toFixed(2)} | Total: $${cost.toFixed(2)} | Agent: ${agentId}`);
       
       const order = { 
         orderId: `PAPER_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`, 
-        symbol, 
-        side, 
-        qty, 
-        price: execPrice,
-        total: cost,
-        status: "FILLED", 
-        timestamp: new Date().toISOString(),
-        mode: "PAPER",
-        agent: agentId,
-        balanceBefore: currentBalance,
-        balanceAfter: newBalance
+        symbol, side, qty, price: execPrice, total: cost,
+        status: "FILLED", timestamp: new Date().toISOString(),
+        mode: "PAPER", agent: agentId,
+        balanceBefore: currentBalance, balanceAfter: newBalance
       };
       
       this.tradeHistory.unshift(order);
@@ -507,9 +456,7 @@ class ExchangeAdapterService {
     return this.getAgentBalance(agentId);
   }
 
-  isConnected() { 
-    return this.connected; 
-  }
+  isConnected() { return this.connected; }
 
   setExchange(exchange) { 
     this.exchange = exchange; 
