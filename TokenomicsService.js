@@ -1,7 +1,14 @@
 const eventBus = require("./EventBus");
 const logger = require("./LoggerService");
 const db = require("./DatabaseService");
-const capitalDistributor = require("./CapitalDistributorService");
+
+// 🔥 IMPORT NO TOPO (não dentro das funções)
+let capitalDistributor = null;
+try {
+  capitalDistributor = require("./CapitalDistributorService");
+} catch (err) {
+  logger.warn(`CapitalDistributor não disponível: ${err.message}`, { service: "Tokenomics" });
+}
 
 // ─── $AZTRON Token Constants ──────────────────────────────────────────────────
 const TOTAL_SUPPLY       = 1_000_000_000;   // 1 billion $AZTRON
@@ -36,30 +43,37 @@ class TokenomicsService {
     this._lastBurn      = null;
     this._lastReward    = null;
     
-    // 🆕 SAVINGS AGORA VEM DO CAPITAL DISTRIBUTOR (não mais gerenciado aqui)
+    // 🆕 SAVINGS AGORA VEM DO CAPITAL DISTRIBUTOR
     this._savingsBalance = 0;
     this._totalWithdrawn = 0;
+    
+    // 🆕 FLAG PARA EVITAR LOOP INFINITO
+    this._processing = false;
 
     // Load saved data from database
     this._loadTokenData();
 
     // 🆕 ESCUTA EVENTOS DO CAPITAL DISTRIBUTOR PARA ATUALIZAR SAVINGS
     eventBus.on("capital:contribution", (data) => {
-      this._savingsBalance = data.savingsBalance;
-      this._saveTokenData();
-      logger.debug(`[Tokenomics] Savings atualizado via CapitalDistributor: $${this._savingsBalance}`, { service: "Tokenomics" });
+      if (data && data.savingsBalance !== undefined) {
+        this._savingsBalance = data.savingsBalance;
+        this._saveTokenData();
+      }
     });
     
     eventBus.on("capital:daily:report", (report) => {
-      this._savingsBalance = report.savings;
-      this._saveTokenData();
+      if (report && report.savings !== undefined) {
+        this._savingsBalance = report.savings;
+        this._saveTokenData();
+      }
     });
     
     eventBus.on("savings:withdraw:approved", (data) => {
-      this._savingsBalance = data.remaining;
-      this._totalWithdrawn += data.amount;
-      this._saveTokenData();
-      logger.info(`🏦 Saque registrado no Tokenomics: $${data.amount} | Restante: $${this._savingsBalance}`, { service: "Tokenomics" });
+      if (data && data.remaining !== undefined) {
+        this._savingsBalance = data.remaining;
+        this._totalWithdrawn += data.amount || 0;
+        this._saveTokenData();
+      }
     });
 
     // Listen to trades for auto-burn / auto-reward
@@ -72,7 +86,6 @@ class TokenomicsService {
   }
 
   async start() {
-    // Sincroniza savings com CapitalDistributor
     await this._syncSavings();
     logger.info("TokenomicsService started — $AZTRON ecosystem ready", { service: "Tokenomics" });
     return { success: true };
@@ -80,6 +93,8 @@ class TokenomicsService {
 
   // 🆕 SINCRONIZA SAVINGS COM CAPITAL DISTRIBUTOR
   async _syncSavings() {
+    if (!capitalDistributor) return;
+    
     try {
       const status = capitalDistributor.getStatus();
       if (status && status.savings) {
@@ -92,7 +107,6 @@ class TokenomicsService {
     }
   }
 
-  // 🆕 Load token data from database
   _loadTokenData() {
     try {
       const saved = db.getTokenData?.();
@@ -110,7 +124,6 @@ class TokenomicsService {
     }
   }
 
-  // 🆕 Save token data to database
   _saveTokenData() {
     try {
       if (db.saveTokenData) {
@@ -129,45 +142,64 @@ class TokenomicsService {
     }
   }
 
-  // 🆕 PROCESS PROFIT (AGORA DELEGA PARA CAPITAL DISTRIBUTOR)
+  // 🆕 PROCESS PROFIT (COM FLAG ANTI-LOOP)
   processProfit(profitAmount, agentId = "trend") {
+    if (this._processing) return { success: false, error: "Already processing" };
     if (profitAmount <= 0) return { success: false, error: "Profit must be positive" };
     
-    // 🆕 Emite evento para o CapitalDistributor processar
-    eventBus.emit("agent:profit", {
-      agentId: agentId,
-      amount: profitAmount,
-      tradeId: `profit_${Date.now()}`
-    });
+    this._processing = true;
     
-    logger.info(`💰 Lucro de $${profitAmount.toFixed(2)} (${agentId}) delegado para CapitalDistributor`, { service: "Tokenomics" });
-    
-    // Retorna o status atual do cofre
-    return { 
-      success: true, 
-      delegated: true,
-      savingsBalance: this._savingsBalance
-    };
+    try {
+      // Emite evento para o CapitalDistributor processar
+      eventBus.emit("agent:profit", {
+        agentId: agentId,
+        amount: profitAmount,
+        tradeId: `profit_${Date.now()}`
+      });
+      
+      logger.info(`💰 Lucro de $${profitAmount.toFixed(2)} (${agentId}) delegado para CapitalDistributor`, { service: "Tokenomics" });
+      
+      return { 
+        success: true, 
+        delegated: true,
+        savingsBalance: this._savingsBalance
+      };
+    } finally {
+      this._processing = false;
+    }
   }
 
-  // 🆕 GET SAVINGS STATUS (AGORA DO CAPITAL DISTRIBUTOR)
   getSavingsStatus() {
-    const status = capitalDistributor.getStatus();
-    const savings = status?.savings || {};
+    if (capitalDistributor) {
+      try {
+        const status = capitalDistributor.getStatus();
+        const savings = status?.savings || {};
+        return {
+          savingsBalance: Math.round((savings.balance || this._savingsBalance) * 100) / 100,
+          totalContributions: Math.round((savings.totalContributions || 0) * 100) / 100,
+          totalWithdrawn: Math.round((savings.totalWithdrawals || this._totalWithdrawn) * 100) / 100,
+          profitSharePercent: 30,
+          source: "CapitalDistributor",
+          lastUpdated: new Date().toISOString()
+        };
+      } catch (err) {
+        logger.warn(`Erro ao obter status do CapitalDistributor: ${err.message}`);
+      }
+    }
     
     return {
-      savingsBalance: Math.round((savings.balance || this._savingsBalance) * 100) / 100,
-      totalContributions: Math.round((savings.totalContributions || 0) * 100) / 100,
-      totalWithdrawn: Math.round((savings.totalWithdrawals || this._totalWithdrawn) * 100) / 100,
-      profitSharePercent: 30, // Percentual do CapitalDistributor
-      source: "CapitalDistributor",
+      savingsBalance: Math.round(this._savingsBalance * 100) / 100,
+      totalContributions: 0,
+      totalWithdrawn: Math.round(this._totalWithdrawn * 100) / 100,
+      profitSharePercent: 30,
+      source: "Local",
       lastUpdated: new Date().toISOString()
     };
   }
 
-  // 🆕 WITHDRAW FROM SAVINGS (VIA CAPITAL DISTRIBUTOR)
   async withdrawFromSavings(amount) {
     if (amount <= 0) return { success: false, error: "Amount must be positive" };
+    if (!capitalDistributor) return { success: false, error: "CapitalDistributor not available" };
     
     return new Promise((resolve) => {
       capitalDistributor.handleWithdraw({
@@ -187,7 +219,6 @@ class TokenomicsService {
     });
   }
 
-  // 🆕 ADD TO SAVINGS (DEPRECATED - USAR CAPITAL DISTRIBUTOR)
   addToSavings(amount) {
     logger.warn(`⚠️ addToSavings está obsoleto. O CapitalDistributor gerencia o cofre automaticamente.`, { service: "Tokenomics" });
     return { success: false, error: "Deprecated - use CapitalDistributor directly", savingsBalance: this._savingsBalance };
@@ -196,13 +227,21 @@ class TokenomicsService {
   // ─── Internal ─────────────────────────────────────────────────────────────
 
   _processTrade(data) {
+    if (this._processing) return;
     if (!data || data.status !== "CLOSED") return;
-    const pnl = data.pnl ?? 0;
-    if (pnl > 0) {
-      this.burnTokens(Math.floor(TOTAL_SUPPLY * BURN_RATE_PER_TRADE * 0.001), "AUTO_BURN_TRADE");
-      if ((data.pnlPct ?? 0) > 1) {
-        this.mintTokens(REWARD_PER_WIN, data.symbol || "TRADE", "TRADE_REWARD");
+    
+    this._processing = true;
+    
+    try {
+      const pnl = data.pnl ?? 0;
+      if (pnl > 0) {
+        this.burnTokens(Math.floor(TOTAL_SUPPLY * BURN_RATE_PER_TRADE * 0.001), "AUTO_BURN_TRADE");
+        if ((data.pnlPct ?? 0) > 1) {
+          this.mintTokens(REWARD_PER_WIN, data.symbol || "TRADE", "TRADE_REWARD");
+        }
       }
+    } finally {
+      this._processing = false;
     }
   }
 
@@ -231,7 +270,6 @@ class TokenomicsService {
     if (this._transactions.length > 50) this._transactions = this._transactions.slice(0, 50);
     this._saveTokenData();
     logger.info(`[Tokenomics] MINT ${amount} $AZTRON → ${recipient} (${reason})`, { service: "Tokenomics" });
-    eventBus.emit("alert", { id: `tok_${Date.now()}`, type: "INFO", message: `+${amount} $AZTRON mintados para ${recipient}`, timestamp: new Date().toISOString(), read: false });
     return { success: true, tx };
   }
 
@@ -347,7 +385,6 @@ class TokenomicsService {
     return { success: true, poolLiquidity: this._poolLiquidity };
   }
 
-  // 🆕 MÉTODO PARA OBTER STATUS COMPLETO
   getStatus() {
     return {
       version: "v5.0.0",
