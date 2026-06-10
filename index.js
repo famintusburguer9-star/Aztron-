@@ -34,18 +34,10 @@ const multiStrategy = require("./MultiStrategyService");
 const memoryService = require("./MemoryService");
 const marketConsciousness = require("./MarketConsciousnessService");
 const tokenomics = require("./TokenomicsService");
-
-// 🆕 HFT SERVICE
 const hft = require("./HFTService");
-
-// ==================== 🆕 NOVOS SERVICOS ====================
 const capitalDistributor = require("./CapitalDistributorService");
 const learningBrain = require("./LearningBrainService");
-
-// ==================== ROBÔ DE ARBITRAGEM ====================
 const arbitrageService = require("./ArbitrageService");
-
-// ==================== 🆕 SENTIMENT AGENT SERVICE ====================
 const sentimentAgent = require("./SentimentAgentService");
 
 const PORT = process.env.PORT || 3001;
@@ -124,13 +116,9 @@ app.get("/api/memory/stats", (_req, res) => res.json(memoryService.getStats()));
 app.get("/api/sentiment", (_req, res) => res.json(sentiment.getSentiment()));
 
 // ─── SENTIMENT AGENT ROUTES ───────────────────────────────────────────────────
-
-// Status do Sentiment Agent
 app.get("/api/sentiment-agent/status", (_req, res) => {
   res.json(sentimentAgent.getStats());
 });
-
-// Iniciar Sentiment Agent
 app.post("/api/sentiment-agent/start", async (_req, res) => {
   try {
     const result = sentimentAgent.start();
@@ -140,8 +128,6 @@ app.post("/api/sentiment-agent/start", async (_req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// Parar Sentiment Agent
 app.post("/api/sentiment-agent/stop", async (_req, res) => {
   try {
     const result = sentimentAgent.stop();
@@ -151,8 +137,6 @@ app.post("/api/sentiment-agent/stop", async (_req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// Pausar Sentiment Agent
 app.post("/api/sentiment-agent/pause", async (_req, res) => {
   try {
     const result = sentimentAgent.pause();
@@ -161,8 +145,6 @@ app.post("/api/sentiment-agent/pause", async (_req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// Retomar Sentiment Agent
 app.post("/api/sentiment-agent/resume", async (_req, res) => {
   try {
     const result = sentimentAgent.resume();
@@ -171,8 +153,6 @@ app.post("/api/sentiment-agent/resume", async (_req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// Configurar Sentiment Agent
 app.post("/api/sentiment-agent/config", (req, res) => {
   try {
     const result = sentimentAgent.updateConfig(req.body);
@@ -181,8 +161,6 @@ app.post("/api/sentiment-agent/config", (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// Forçar sinal manual
 app.post("/api/sentiment-agent/force-signal", (req, res) => {
   try {
     const { symbol, type, confidence, reason } = req.body;
@@ -195,8 +173,6 @@ app.post("/api/sentiment-agent/force-signal", (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// Recomendação atual para um símbolo
 app.get("/api/sentiment-agent/recommendation/:symbol", (req, res) => {
   try {
     const result = sentimentAgent.getCurrentRecommendation(req.params.symbol);
@@ -205,13 +181,42 @@ app.get("/api/sentiment-agent/recommendation/:symbol", (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// Estatísticas do Sentiment Agent
 app.get("/api/sentiment-agent/stats", (_req, res) => {
   try {
     const stats = sentimentAgent.getStats();
     res.json(stats);
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── DEEP PATTERN ROUTES ─────────────────────────────────────────────────────
+app.get("/api/deep/status", (_req, res) => {
+  res.json(deepPattern.getStatus());
+});
+app.get("/api/deep/patterns", (req, res) => {
+  const limit = parseInt(req.query.limit) || 20;
+  const filter = req.query.filter || null;
+  res.json(deepPattern.getPatterns(limit, filter));
+});
+app.get("/api/deep/performance", (_req, res) => {
+  res.json(deepPattern.getPerformanceStats());
+});
+app.post("/api/deep/start", async (_req, res) => {
+  try {
+    const result = deepPattern.start();
+    res.json({ success: true, ...result });
+  } catch (error) {
+    logger.error("DeepPattern start error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+app.post("/api/deep/stop", async (_req, res) => {
+  try {
+    const result = deepPattern.stop();
+    res.json({ success: true, ...result });
+  } catch (error) {
+    logger.error("DeepPattern stop error:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -554,8 +559,6 @@ app.post("/api/savings/withdraw", (req, res) => {
 });
 
 // ==================== 🆕 HFT ROUTES ====================
-
-// Iniciar HFT
 app.post("/api/hft/start", async (req, res) => {
   try {
     const result = await hft.start();
@@ -565,8 +568,6 @@ app.post("/api/hft/start", async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// Parar HFT
 app.post("/api/hft/stop", async (req, res) => {
   try {
     const result = await hft.stop();
@@ -576,8 +577,6 @@ app.post("/api/hft/stop", async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// Status do HFT
 app.get("/api/hft/status", async (req, res) => {
   try {
     const status = hft.getStatus();
@@ -586,8 +585,6 @@ app.get("/api/hft/status", async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// Métricas do HFT
 app.get("/api/hft/metrics", async (req, res) => {
   try {
     const metrics = hft.getMetrics();
@@ -596,8 +593,6 @@ app.get("/api/hft/metrics", async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// Trades do HFT
 app.get("/api/hft/trades", (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 50;
@@ -607,8 +602,6 @@ app.get("/api/hft/trades", (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// Reset HFT (admin)
 app.post("/api/hft/reset", (req, res) => {
   try {
     const result = db.resetHFTData?.() || { success: true };
@@ -619,76 +612,52 @@ app.post("/api/hft/reset", (req, res) => {
 });
 
 // ==================== 🆕 CAPITAL DISTRIBUTOR ROUTES ====================
-
-// Status completo do capital
 app.get("/api/capital/status", (_req, res) => {
   res.json(capitalDistributor.getStatus());
 });
-
-// Lista de agentes com seus capitais
 app.get("/api/capital/agents", (_req, res) => {
   const status = capitalDistributor.getStatus();
   res.json(status.agents);
 });
-
-// Capital de um agente específico
 app.get("/api/capital/agent/:agentId", (req, res) => {
   const info = capitalDistributor.getAgentInfo(req.params.agentId);
   if (!info) return res.status(404).json({ error: "Agent not found" });
   res.json(info);
 });
-
-// Status do cofre (savings)
 app.get("/api/capital/savings", (_req, res) => {
   res.json({
     balance: capitalDistributor.getSavingsBalance(),
     status: capitalDistributor.getStatus().savings
   });
 });
-
-// Resetar distribuição de capital
 app.post("/api/capital/reset", (req, res) => {
   capitalDistributor.distributeInitialCapital();
   res.json({ success: true, message: "Capital redistributed" });
 });
 
 // ==================== 🆕 LEARNING BRAIN ROUTES ====================
-
-// Status do Learning Brain
 app.get("/api/learning/status", (_req, res) => {
   res.json(learningBrain.getStatus());
 });
-
-// Conhecimento acumulado
 app.get("/api/learning/knowledge", (_req, res) => {
   res.json(learningBrain.getKnowledge());
 });
-
-// Insights gerados
 app.get("/api/learning/insights", (req, res) => {
   const limit = parseInt(req.query.limit) || 20;
   res.json(learningBrain.knowledge?.insights?.slice(0, limit) || []);
 });
-
-// Padrões descobertos
 app.get("/api/learning/patterns", (req, res) => {
   const limit = parseInt(req.query.limit) || 20;
   res.json(learningBrain.knowledge?.patterns?.slice(0, limit) || []);
 });
 
 // ==================== 🆕 ARBITRAGE SERVICE ROUTES ====================
-
-// Status do Arbitrage
 app.get("/api/arbitrage/status", (_req, res) => {
   res.json(arbitrageService.getStatus());
 });
-
-// Métricas do Arbitrage
 app.get("/api/arbitrage/metrics", (_req, res) => {
   res.json(arbitrageService.getMetrics());
 });
-
-// Oportunidades encontradas
 app.get("/api/arbitrage/opportunities", (_req, res) => {
   res.json(arbitrageService.opportunities || []);
 });
@@ -712,19 +681,15 @@ io.on("connection", (socket) => {
   const optimizerCompleteHandler = (data) => socket.emit("optimizer:complete", data);
   const sentimentScanHandler = (data) => socket.emit("sentiment:scan:complete", data);
   const savingsUpdateHandler = (data) => socket.emit("savings:update", data);
-  
-  // 🆕 HFT WebSocket events
   const hftTradeHandler = (trade) => socket.emit("hft:trade", trade);
   const hftStatusHandler = (status) => socket.emit("hft:status", status);
-  
-  // 🆕 NOVOS WebSocket events
   const arbitrageHandler = (opp) => socket.emit("arbitrage:opportunity", opp);
   const capitalUpdateHandler = (data) => socket.emit("capital:update", data);
   const learningInsightHandler = (insight) => socket.emit("learning:insight", insight);
-  
-  // 🆕 SENTIMENT AGENT WebSocket events
   const sentimentAgentSignalHandler = (signal) => socket.emit("sentiment-agent:signal", signal);
   const sentimentAgentExtremeHandler = (data) => socket.emit("sentiment-agent:extreme", data);
+  const deepPatternHandler = (pattern) => socket.emit("deep:pattern", pattern);
+  const deepSignalHandler = (signal) => socket.emit("deep:signal", signal);
 
   eventBus.on("tick", tickHandler);
   eventBus.on("signal", signalHandler);
@@ -743,6 +708,8 @@ io.on("connection", (socket) => {
   eventBus.on("learning:insight", learningInsightHandler);
   eventBus.on("sentiment-agent:signal", sentimentAgentSignalHandler);
   eventBus.on("sentiment-agent:extreme", sentimentAgentExtremeHandler);
+  eventBus.on("deep:pattern", deepPatternHandler);
+  eventBus.on("deep:signal", deepSignalHandler);
 
   socket.on("disconnect", () => {
     eventBus.off("tick", tickHandler);
@@ -762,78 +729,32 @@ io.on("connection", (socket) => {
     eventBus.off("learning:insight", learningInsightHandler);
     eventBus.off("sentiment-agent:signal", sentimentAgentSignalHandler);
     eventBus.off("sentiment-agent:extreme", sentimentAgentExtremeHandler);
+    eventBus.off("deep:pattern", deepPatternHandler);
+    eventBus.off("deep:signal", deepSignalHandler);
     logger.info(`WebSocket disconnected: ${socket.id}`, { service: "WebSocket" });
   });
 });
 
 // ─── Startup ──────────────────────────────────────────────────────────────────
 async function main() {
-  logger.info("🚀 Iniciando AZTRON - Ordem correta de inicialização", { service: "Startup" });
+  logger.info("🚀 Iniciando AZTRON - API e Orquestrador", { service: "Startup" });
   
-  // 1. SERVIÇOS BASE
-  memoryService.setDatabase(db);
-  await memoryService.start();
-  
-  // 2. CAPITAL DISTRIBUTOR (distribui 100k para os 5 agentes)
-  logger.info("💰 Inicializando CapitalDistributorService...", { service: "Startup" });
-  await capitalDistributor.start();
-  
-  // 3. LEARNING BRAIN (cérebro que aprende)
-  logger.info("🧠 Inicializando LearningBrainService...", { service: "Startup" });
-  await learningBrain.start();
-  
-  // 4. SERVIÇOS DE MERCADO E ANÁLISE
-  if (marketConsciousness.start) await marketConsciousness.start();
-  if (tokenomics.start) await tokenomics.start();
-  
-  // 5. HFT SERVICE (já modificado para usar CapitalDistributor)
-  logger.info("🤖 Inicializando HFTService...", { service: "Startup" });
-  await hft.initialize();
-  
-  // 6. ARBITRAGE SERVICE (inicializa e aguarda capital)
-  logger.info("🚀 Inicializando ArbitrageService...", { service: "Startup" });
-  await arbitrageService.initialize();
-  
-  // 7. SENTIMENT AGENT SERVICE (inicializa e começa a gerar sinais)
-  logger.info("📊 Inicializando SentimentAgentService...", { service: "Startup" });
-  sentimentAgent.start();
-  
-  // 8. ORCHESTRATOR (inicia os serviços restantes)
-  logger.info("🎮 Inicializando Orchestrator...", { service: "Startup" });
+  // INICIALIZA O ORCHESTRATOR (que cuida de TODOS os serviços)
   await orchestrator.init();
   await orchestrator.start();
   
-  // 9. VERIFICAÇÃO FINAL
-  const config = db.getConfig();
-  logger.info(`📊 Configuração atual: Modo=${config.mode}, Exchange=${config.exchange}`, { service: "Startup" });
-  
-  // Exibe status dos serviços
-  setTimeout(() => {
-    logger.info("========== STATUS FINAL DOS SERVIÇOS ==========", { service: "Startup" });
-    logger.info(`💰 Capital Distributor: ${capitalDistributor.isRunning ? "✅ rodando" : "❌ parado"}`, { service: "Startup" });
-    logger.info(`🧠 Learning Brain: ${learningBrain.isRunning ? "✅ rodando" : "❌ parado"}`, { service: "Startup" });
-    logger.info(`🤖 HFT: ${hft.running ? "✅ rodando" : "❌ parado"}`, { service: "Startup" });
-    logger.info(`🚀 Arbitrage: ${arbitrageService.isRunning ? "✅ rodando" : "❌ parado"}`, { service: "Startup" });
-    logger.info(`📊 Sentiment Agent: ${sentimentAgent.isRunning ? "✅ rodando" : "❌ parado"}`, { service: "Startup" });
-    logger.info(`🎮 Orchestrator: ${orchestrator.running ? "✅ rodando" : "❌ parado"}`, { service: "Startup" });
-    logger.info("===============================================", { service: "Startup" });
-  }, 3000);
-
-  server.listen(PORT, "0.0.0.0", () => {
-    logger.info(`AZTRON Backend running on port ${PORT}`, { service: "Orchestrator" });
-    logger.info(`REST API: http://0.0.0.0:${PORT}/api`, { service: "Orchestrator" });
-    logger.info(`WebSocket: ws://0.0.0.0:${PORT}`, { service: "Orchestrator" });
-    logger.info(`💰 Capital Distributor ready`, { service: "CapitalDistributor" });
-    logger.info(`🧠 Learning Brain ready`, { service: "LearningBrain" });
-    logger.info(`🤖 HFT Trading Engine ready`, { service: "HFT" });
-    logger.info(`🚀 Arbitrage Service ready`, { service: "ArbitrageService" });
-    logger.info(`📊 Sentiment Agent ready - Gerando sinais de trade baseados em Fear & Greed`, { service: "SentimentAgent" });
-    logger.info(`✅ TOTAL DE SERVIÇOS INTEGRADOS`, { service: "Orchestrator" });
-  });
+  logger.info(`✅ AZTRON API ready on port ${PORT}`, { service: "Startup" });
+  logger.info(`📊 Orchestrator gerenciando todos os serviços`, { service: "Startup" });
 }
 
 main().catch(err => { 
   logger.error(`Fatal startup error: ${err.message}`, { service: "Startup" });
   logger.error(err.stack, { service: "Startup" });
   process.exit(1); 
+});
+
+server.listen(PORT, "0.0.0.0", () => {
+  logger.info(`AZTRON Backend running on port ${PORT}`, { service: "API" });
+  logger.info(`REST API: http://0.0.0.0:${PORT}/api`, { service: "API" });
+  logger.info(`WebSocket: ws://0.0.0.0:${PORT}`, { service: "API" });
 });
