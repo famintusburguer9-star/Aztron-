@@ -71,15 +71,23 @@ app.get("/api/engine/config", (_req, res) => res.json(db.getConfig()));
 app.put("/api/engine/config", (req, res) => res.json(db.updateConfig(req.body)));
 
 // ─── Trades ───────────────────────────────────────────────────────────────────
+// 🔥 LIMITADO: máximo 20 trades por requisição
 app.get("/api/trades", (req, res) => {
   const { status, side, symbol, limit } = req.query;
-  res.json(db.getTrades({ status, side, symbol, limit: parseInt(limit) || 50 }));
+  const maxLimit = Math.min(parseInt(limit) || 20, 30);
+  const trades = db.getTrades({ status, side, symbol, limit: maxLimit });
+  res.json(trades.slice(0, 20));
 });
 app.get("/api/trades/open", (_req, res) => res.json(tradeExecutor.getOpenTrades()));
 app.get("/api/trades/stats", (_req, res) => res.json(db.stats()));
 
 // ─── Signals ──────────────────────────────────────────────────────────────────
-app.get("/api/signals", (req, res) => res.json(signalService.getSignals(parseInt(req.query.limit) || 20)));
+// 🔥 LIMITADO: máximo 15 sinais por requisição
+app.get("/api/signals", (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 15, 20);
+  const signals = signalService.getSignals(limit);
+  res.json(signals.slice(0, 15));
+});
 app.get("/api/signals/latest", (_req, res) => res.json(signalService.getLatest()));
 app.get("/api/signals/analyze/:symbol", (req, res) => res.json(multiStrategy.analyzeConsensus(req.params.symbol)));
 
@@ -104,7 +112,12 @@ app.get("/api/portfolio/goals", (_req, res) => res.json(goals.getGoals()));
 
 // ─── AI Brain ─────────────────────────────────────────────────────────────────
 app.get("/api/ai/brain/status", (_req, res) => res.json(aiLearning.getStatus()));
-app.get("/api/ai/thoughts", (req, res) => res.json(aiLearning.getThoughts(parseInt(req.query.limit) || 20)));
+// 🔥 LIMITADO: máximo 10 pensamentos por requisição
+app.get("/api/ai/thoughts", (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 10, 15);
+  const thoughts = aiLearning.getThoughts(limit);
+  res.json(thoughts.slice(0, 10));
+});
 app.get("/api/ai/learning-history", (_req, res) => res.json(aiLearning.getLearningHistory()));
 app.get("/api/ai/patterns", (req, res) => res.json(deepPattern.getPatterns(parseInt(req.query.limit) || 10)));
 app.get("/api/ai/sentiment", (_req, res) => res.json(sentiment.getSentiment()));
@@ -597,7 +610,7 @@ app.get("/api/hft/trades", (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 50;
     const trades = db.getHFTTrades?.(limit) || [];
-    res.json(trades);
+    res.json(trades.slice(0, 20));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -689,7 +702,7 @@ io.on("connection", (socket) => {
   const sentimentAgentSignalHandler = (signal) => socket.emit("sentiment-agent:signal", signal);
   const sentimentAgentExtremeHandler = (data) => socket.emit("sentiment-agent:extreme", data);
   const deepPatternHandler = (pattern) => socket.emit("deep:pattern", pattern);
-  const deepSignalHandler = (signal) => socket.emit("deep:signal", signal);
+  const deepSignalHandler = (signal) => socket.emit("deep:signal", deepSignalHandler);
 
   eventBus.on("tick", tickHandler);
   eventBus.on("signal", signalHandler);
