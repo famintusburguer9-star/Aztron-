@@ -8,35 +8,53 @@ class Orchestrator {
     this.startTime = null;
     this.services = {};
     this.serviceOrder = [
+      // ==================== SERVIÇOS BASE ====================
+      { name: "memory", path: "./MemoryService", required: true },
       { name: "exchangeAdapter", path: "./ExchangeAdapterService", required: true },
       { name: "capitalDistributor", path: "./CapitalDistributorService", required: true },
       { name: "learningBrain", path: "./LearningBrainService", required: true },
+      
+      // ==================== DADOS DE MERCADO ====================
       { name: "marketData", path: "./MarketDataService", required: true },
       { name: "marketCondition", path: "./MarketConditionService", required: true },
-      { name: "sentiment", path: "./SentimentService", required: true },
-      { name: "deepPattern", path: "./DeepPatternRecognitionService", required: true },
       { name: "marketMux", path: "./MarketMultiplexerService", required: false },
+      
+      // ==================== ANÁLISE E SENTIMENTO ====================
+      { name: "sentiment", path: "./SentimentService", required: true },
+      { name: "sentimentAgent", path: "./SentimentAgentService", required: true },  // 🆕 ADICIONADO
+      { name: "deepPattern", path: "./DeepPatternRecognitionService", required: true },
+      
+      // ==================== ESTRATÉGIAS ====================
       { name: "strategy", path: "./StrategyService", required: true },
       { name: "multiStrategy", path: "./MultiStrategyService", required: false },
       { name: "rsiStrategy", path: "./RsiStrategy", required: false },
       { name: "macdStrategy", path: "./MacdStrategy", required: false },
       { name: "breakoutStrategy", path: "./BreakoutStrategy", required: false },
+      
+      // ==================== SINAIS E RISCO ====================
       { name: "signalService", path: "./SignalService", required: true },
       { name: "riskManagement", path: "./RiskManagementService", required: true },
       { name: "flashCrash", path: "./FlashCrashShieldService", required: false },
       { name: "slippage", path: "./SlippageEstimatorService", required: false },
       { name: "spread", path: "./SpreadAnalyzerService", required: false },
+      
+      // ==================== ROBÔS DE TRADING ====================
       { name: "tradeExecutor", path: "./TradeExecutorService", required: true },
       { name: "hft", path: "./HFTService", required: true },
       { name: "arbitrage", path: "./ArbitrageService", required: true },
+      
+      // ==================== AI E OTIMIZAÇÃO ====================
       { name: "aiLearning", path: "./AIZtronLearningService", required: true },
       { name: "aiOptimizer", path: "./AIZtronOptimizerService", required: false },
+      
+      // ==================== PORTFOLIO E TOKENOMICS ====================
       { name: "portfolio", path: "./PortfolioService", required: true },
       { name: "accountManager", path: "./AccountManagerService", required: false },
       { name: "goalTracker", path: "./GoalTrackerService", required: false },
-      { name: "memory", path: "./MemoryService", required: true },
       { name: "marketConsciousness", path: "./MarketConsciousnessService", required: false },
       { name: "tokenomics", path: "./TokenomicsService", required: true },
+      
+      // ==================== OBSERVABILIDADE ====================
       { name: "observability", path: "./ObservabilityService", required: false },
       { name: "backtest", path: "./BacktestService", required: false },
       { name: "backtestAI", path: "./BacktestAIService", required: false },
@@ -81,13 +99,6 @@ class Orchestrator {
       }
     });
     
-    // 🔥 ESCUTA TICKS PARA EXCHANGE
-    eventBus.on("tick", (prices) => {
-      if (this.services.exchangeAdapter && this.services.exchangeAdapter.updatePrices) {
-        this.services.exchangeAdapter.updatePrices?.(prices);
-      }
-    });
-    
     logger.info(`Orchestrator initialized: ${loadedCount} services loaded, ${failedCount} failed`, { 
       service: "Orchestrator",
       loaded: loadedCount,
@@ -111,6 +122,7 @@ class Orchestrator {
       if (!instance) continue;
       
       try {
+        // Tenta start() primeiro, depois initialize()
         if (typeof instance.start === 'function') {
           await instance.start();
           startedServices.push(service.name);
@@ -144,12 +156,13 @@ class Orchestrator {
       failed: failedServices
     });
     
+    // STATUS DOS 5 ROBÔS
     logger.info("========== STATUS DOS 5 ROBÔS ==========", { service: "Orchestrator" });
-    logger.info(`🎯 TREND: ${this.services.tradeExecutor?.running ? "✅" : "❌"}`, { service: "Orchestrator" });
-    logger.info(`⚡ HFT: ${this.services.hft?.running ? "✅" : "❌"}`, { service: "Orchestrator" });
-    logger.info(`🔄 ARBITRAGE: ${this.services.arbitrage?.isRunning ? "✅" : "❌"}`, { service: "Orchestrator" });
-    logger.info(`📊 SENTIMENT: ${this.services.sentiment?.isRunning ? "✅" : "❌"}`, { service: "Orchestrator" });
-    logger.info(`🧠 DEEP: ${this.services.deepPattern?.isRunning ? "✅" : "❌"}`, { service: "Orchestrator" });
+    logger.info(`🎯 TREND: ${this.services.tradeExecutor?.running ? "✅ rodando" : "❌ parado"}`, { service: "Orchestrator" });
+    logger.info(`⚡ HFT: ${this.services.hft?.running ? "✅ rodando" : "❌ parado"}`, { service: "Orchestrator" });
+    logger.info(`🔄 ARBITRAGE: ${this.services.arbitrage?.isRunning ? "✅ rodando" : "❌ parado"}`, { service: "Orchestrator" });
+    logger.info(`📊 SENTIMENT AGENT: ${this.services.sentimentAgent?.isRunning ? "✅ rodando" : "❌ parado"}`, { service: "Orchestrator" });
+    logger.info(`🧠 DEEP PATTERN: ${this.services.deepPattern?.isRunning ? "✅ rodando" : "❌ parado"}`, { service: "Orchestrator" });
     logger.info("========================================", { service: "Orchestrator" });
     
     db.addAlert({
@@ -169,6 +182,7 @@ class Orchestrator {
     this.running = false;
     const stoppedServices = [];
     
+    // Para na ordem reversa
     for (let i = this.serviceOrder.length - 1; i >= 0; i--) {
       const service = this.serviceOrder[i];
       const instance = this.services[service.name];
@@ -191,9 +205,6 @@ class Orchestrator {
   }
 
   getStatus() {
-    const capitalStatus = this.services.capitalDistributor?.getStatus?.() || {};
-    const learningStatus = this.services.learningBrain?.getStatus?.() || {};
-    
     return {
       running: this.running,
       startedAt: this.startTime ? new Date(this.startTime).toISOString() : null,
@@ -202,11 +213,9 @@ class Orchestrator {
         trend: this.services.tradeExecutor?.running || false,
         hft: this.services.hft?.running || false,
         arbitrage: this.services.arbitrage?.isRunning || false,
-        sentiment: this.services.sentiment?.isRunning || false,
-        deep: this.services.deepPattern?.isRunning || false
-      },
-      capital: capitalStatus,
-      learning: learningStatus
+        sentimentAgent: this.services.sentimentAgent?.isRunning || false,
+        deepPattern: this.services.deepPattern?.isRunning || false
+      }
     };
   }
   
@@ -224,8 +233,8 @@ class Orchestrator {
       trend: { running: this.services.tradeExecutor?.running || false },
       hft: { running: this.services.hft?.running || false },
       arbitrage: { running: this.services.arbitrage?.isRunning || false },
-      sentiment: { running: this.services.sentiment?.isRunning || false },
-      deep: { running: this.services.deepPattern?.isRunning || false }
+      sentimentAgent: { running: this.services.sentimentAgent?.isRunning || false },
+      deepPattern: { running: this.services.deepPattern?.isRunning || false }
     };
   }
 }
