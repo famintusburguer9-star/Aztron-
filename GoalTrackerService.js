@@ -2,10 +2,15 @@ const storage = require("./storage");
 const logger = require("./LoggerService");
 const eventBus = require("./EventBus");
 
+// 🔥 IMPORT NO TOPO (não dentro da função)
+const capitalDistributor = require("./CapitalDistributorService");
+const db = require("./DatabaseService");
+
 class GoalTrackerService {
   constructor() {
     this.agentId = "goals";
     this.isRunning = false;
+    this._updating = false; // 🆕 EVITA LOOP
     
     // Metas padrão
     this.goals = storage.get("goals", [
@@ -55,7 +60,6 @@ class GoalTrackerService {
         break;
         
       case "REDUZIR_RISCO":
-        // Ajusta metas para serem mais conservadoras
         const roiGoal = this.goals.find(g => g.id === "g1");
         if (roiGoal && !roiGoal.achieved) {
           roiGoal.target = Math.max(5, roiGoal.target * 0.8);
@@ -70,7 +74,6 @@ class GoalTrackerService {
     if (this.isRunning) return;
     this.isRunning = true;
     
-    // Verifica metas periodicamente
     setInterval(() => this._checkGoals(), this.config.checkInterval);
     
     logger.info("GoalTrackerService started", { service: "GoalTracker" });
@@ -83,61 +86,75 @@ class GoalTrackerService {
 
   // 🆕 ATUALIZA METAS BASEADO EM TRADES
   _updateFromTrade(trade) {
-    // Atualiza Win Rate
-    const winRateGoal = this.goals.find(g => g.id === "g2");
-    if (winRateGoal && trade.result) {
-      // Precisa de dados acumulados para calcular win rate
-      this._recalculateWinRate();
-    }
+    if (this._updating) return;
+    this._updating = true;
     
-    // Atualiza Total Trades
-    const tradesGoal = this.goals.find(g => g.id === "g4");
-    if (tradesGoal) {
-      const db = require("./DatabaseService");
-      const allTrades = db.getTrades({});
-      tradesGoal.current = allTrades.length;
-      this._saveGoals();
-      this._recordProgress(tradesGoal);
+    try {
+      const tradesGoal = this.goals.find(g => g.id === "g4");
+      if (tradesGoal) {
+        const allTrades = db.getTrades({});
+        tradesGoal.current = allTrades.length;
+        this._saveGoals();
+        this._recordProgress(tradesGoal);
+        this._checkGoalAchievement(tradesGoal);
+      }
+      
+      // Atualiza Win Rate
+      this._recalculateWinRate();
+    } finally {
+      this._updating = false;
     }
   }
 
   // 🆕 ATUALIZA METAS BASEADO EM LUCRO
   _updateFromProfit(profit) {
-    const roiGoal = this.goals.find(g => g.id === "g1");
-    if (roiGoal) {
-      const capitalDistributor = require("./CapitalDistributorService");
-      const totalCapital = capitalDistributor.getTotalSystemBalance?.() || 100000;
-      const initialCapital = 100000;
-      
-      roiGoal.current = ((totalCapital - initialCapital) / initialCapital) * 100;
-      this._saveGoals();
-      this._recordProgress(roiGoal);
-      this._checkGoalAchievement(roiGoal);
+    if (this._updating) return;
+    this._updating = true;
+    
+    try {
+      const roiGoal = this.goals.find(g => g.id === "g1");
+      if (roiGoal && capitalDistributor) {
+        const totalCapital = capitalDistributor.getTotalSystemBalance?.() || 100000;
+        const initialCapital = 100000;
+        
+        roiGoal.current = ((totalCapital - initialCapital) / initialCapital) * 100;
+        this._saveGoals();
+        this._recordProgress(roiGoal);
+        this._checkGoalAchievement(roiGoal);
+      }
+    } finally {
+      this._updating = false;
     }
   }
 
   // 🆕 ATUALIZA METAS BASEADO EM ESTATÍSTICAS DE MERCADO
   _updateFromStats(stats) {
-    const drawdownGoal = this.goals.find(g => g.id === "g3");
-    if (drawdownGoal && stats.maxDrawdown !== undefined) {
-      drawdownGoal.current = Math.abs(stats.maxDrawdown);
-      this._saveGoals();
-      this._recordProgress(drawdownGoal);
-      this._checkGoalAchievement(drawdownGoal);
-    }
+    if (this._updating) return;
+    this._updating = true;
     
-    const profitFactorGoal = this.goals.find(g => g.id === "g5");
-    if (profitFactorGoal && stats.profitFactor !== undefined) {
-      profitFactorGoal.current = stats.profitFactor;
-      this._saveGoals();
-      this._recordProgress(profitFactorGoal);
-      this._checkGoalAchievement(profitFactorGoal);
+    try {
+      const drawdownGoal = this.goals.find(g => g.id === "g3");
+      if (drawdownGoal && stats.maxDrawdown !== undefined) {
+        drawdownGoal.current = Math.abs(stats.maxDrawdown);
+        this._saveGoals();
+        this._recordProgress(drawdownGoal);
+        this._checkGoalAchievement(drawdownGoal);
+      }
+      
+      const profitFactorGoal = this.goals.find(g => g.id === "g5");
+      if (profitFactorGoal && stats.profitFactor !== undefined) {
+        profitFactorGoal.current = stats.profitFactor;
+        this._saveGoals();
+        this._recordProgress(profitFactorGoal);
+        this._checkGoalAchievement(profitFactorGoal);
+      }
+    } finally {
+      this._updating = false;
     }
   }
 
   // 🆕 RECALCULA WIN RATE
   _recalculateWinRate() {
-    const db = require("./DatabaseService");
     const closedTrades = db.getTrades({ status: "CLOSED" });
     const wins = closedTrades.filter(t => t.result === "WIN").length;
     const winRate = closedTrades.length > 0 ? (wins / closedTrades.length) * 100 : 0;
@@ -153,16 +170,17 @@ class GoalTrackerService {
 
   // 🆕 REGISTRA PROGRESSO NO HISTÓRICO
   _recordProgress(goal) {
+    if (!goal) return;
+    
     this.progressHistory.unshift({
       goalId: goal.id,
       label: goal.label,
       target: goal.target,
       current: goal.current,
-      progress: (goal.current / goal.target) * 100,
+      progress: goal.target > 0 ? (goal.current / goal.target) * 100 : 0,
       timestamp: new Date().toISOString()
     });
     
-    // Mantém apenas últimos N registros
     if (this.progressHistory.length > this.config.maxHistorySize) {
       this.progressHistory = this.progressHistory.slice(0, this.config.maxHistorySize);
     }
@@ -172,7 +190,7 @@ class GoalTrackerService {
 
   // 🆕 VERIFICA SE META FOI ATINGIDA
   _checkGoalAchievement(goal) {
-    if (goal.achieved) return;
+    if (!goal || goal.achieved) return;
     
     let isAchieved = false;
     
@@ -195,8 +213,15 @@ class GoalTrackerService {
 
   // 🆕 VERIFICA TODAS AS METAS
   _checkGoals() {
-    for (const goal of this.goals) {
-      this._checkGoalAchievement(goal);
+    if (this._updating) return;
+    this._updating = true;
+    
+    try {
+      for (const goal of this.goals) {
+        this._checkGoalAchievement(goal);
+      }
+    } finally {
+      this._updating = false;
     }
   }
 
@@ -333,7 +358,6 @@ class GoalTrackerService {
   }
 
   reset() {
-    // Reseta todas as metas
     for (const goal of this.goals) {
       goal.current = goal.startValue || 0;
       goal.achieved = false;
