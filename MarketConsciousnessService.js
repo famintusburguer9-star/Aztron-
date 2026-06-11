@@ -32,6 +32,9 @@ class MarketConsciousnessService {
     this._pauseReason = null;
     this.isRunning = false;
     
+    // 🔥 NOVO: AGENTES PAUSADOS INDIVIDUALMENTE
+    this.pausedAgents = new Set(); // IDs dos robôs que estão sem capital
+    
     this.agentId = "market_consciousness";
     
     this.config = {
@@ -405,75 +408,95 @@ class MarketConsciousnessService {
     }
   }
 
-  // 🔥🔥🔥 NOVO: MONITORA CAPITAL DOS ROBÔS 🔥🔥🔥
+  // 🔥🔥🔥 NOVO: MONITORA CAPITAL DOS ROBÔS (PAUSA APENAS O ROBÔ ESPECÍFICO) 🔥🔥🔥
   _checkCapitalStatus() {
     try {
       const capitalDistributor = require("./CapitalDistributorService");
       const status = capitalDistributor.getStatus();
       const agents = status.agents || [];
       
-      const zeroCapitalAgents = [];
-      const lowCapitalAgents = [];
+      const agentsToPause = [];
+      const agentsToResume = [];
+      
+      // Mapeamento de nomes para IDs
+      const nameToId = {
+        "Trend Aztron": "trend",
+        "HFT Service": "hft",
+        "Arbitrage Service": "arbitrage",
+        "Sentiment Service": "sentiment",
+        "Deep Pattern": "deep"
+      };
       
       for (const agent of agents) {
-        if (agent.balance <= 0) {
-          zeroCapitalAgents.push(agent.name);
-        } else if (agent.balance < 100) {
-          lowCapitalAgents.push(agent.name);
+        const agentId = nameToId[agent.name];
+        if (!agentId) continue;
+        
+        // Se o robô está sem capital, PAUSA ele
+        if (agent.balance <= 0 && !this.pausedAgents.has(agentId)) {
+          this.pausedAgents.add(agentId);
+          agentsToPause.push(agent.name);
+          
+          // 🔥 EMITE EVENTO PARA PAUSAR O ROBÔ ESPECÍFICO
+          eventBus.emit(`agent:pause`, {
+            agentId: agentId,
+            reason: `Sem capital (saldo: $${agent.balance})`,
+            duration: null // pausa até ter capital
+          });
+          
+          logger.warn(`[Consciousness] ⏸️ ROBÔ PAUSADO: ${agent.name} - Sem capital!`, { service: "MarketConsciousness" });
+        }
+        // Se o robô tem capital suficiente e estava pausado, RETOMA ele
+        else if (agent.balance > 100 && this.pausedAgents.has(agentId)) {
+          this.pausedAgents.delete(agentId);
+          agentsToResume.push(agent.name);
+          
+          // 🔥 EMITE EVENTO PARA RETOMAR O ROBÔ ESPECÍFICO
+          eventBus.emit(`agent:resume`, {
+            agentId: agentId,
+            reason: `Capital restaurado (saldo: $${agent.balance})`
+          });
+          
+          logger.info(`[Consciousness] ▶️ ROBÔ RETOMADO: ${agent.name} - Capital disponível!`, { service: "MarketConsciousness" });
         }
       }
       
-      // Se tem robôs sem capital, entra em modo estudo
-      if (zeroCapitalAgents.length > 0 && this._mode !== "STUDY" && !this._manuallyPaused) {
-        const oldMode = this._mode;
-        this._mode = "STUDY";
-        this._studyStarted = new Date().toISOString();
-        this._pauseReason = `Robôs sem capital: ${zeroCapitalAgents.join(", ")}. Aguardando reinvestimento.`;
-        
-        logger.warn(`[Consciousness] MODO ESTUDO ATIVADO - ${this._pauseReason}`, { service: "MarketConsciousness" });
-        
+      // Emite alertas se houver mudanças
+      if (agentsToPause.length > 0) {
         eventBus.emit("alert", {
-          id: `cs_capital_${Date.now()}`,
+          id: `cs_pause_${Date.now()}`,
           type: "WARNING",
-          message: `Modo Estudo ativado: ${this._pauseReason}`,
+          message: `Robôs pausados por falta de capital: ${agentsToPause.join(", ")}`,
           timestamp: new Date().toISOString(),
           read: false
         });
         
-        this._shareInsight("mode_change",
-          `Mudança para MODO ESTUDO: ${this._pauseReason}`,
+        this._shareInsight("agents_paused",
+          `Robôs pausados por falta de capital: ${agentsToPause.join(", ")}`,
           0.95,
-          { from: oldMode, to: "STUDY", reason: this._pauseReason, zeroCapitalAgents }
+          { pausedAgents: agentsToPause }
         );
       }
       
-      // Se o capital voltou, retoma operações
-      if (zeroCapitalAgents.length === 0 && lowCapitalAgents.length === 0 && this._mode === "STUDY" && this._pauseReason?.includes("sem capital")) {
-        this._mode = "OPERATING";
-        this._studyStarted = null;
-        this._pauseReason = null;
-        
-        logger.info(`[Consciousness] RETOMANDO OPERAÇÕES - Capital disponível!`, { service: "MarketConsciousness" });
-        
+      if (agentsToResume.length > 0) {
         eventBus.emit("alert", {
-          id: `cs_capital_return_${Date.now()}`,
+          id: `cs_resume_${Date.now()}`,
           type: "INFO",
-          message: "Capital restaurado! Retomando operações.",
+          message: `Robôs retomados: ${agentsToResume.join(", ")}`,
           timestamp: new Date().toISOString(),
           read: false
         });
         
-        this._shareInsight("mode_change",
-          `Retorno ao MODO OPERAÇÕES: Capital disponível`,
+        this._shareInsight("agents_resumed",
+          `Robôs retomados: ${agentsToResume.join(", ")}`,
           0.9,
-          { from: "STUDY", to: "OPERATING", reason: "capital_restored" }
+          { resumedAgents: agentsToResume }
         );
       }
       
-      return { zeroCapitalAgents, lowCapitalAgents };
+      return { pausedAgents: Array.from(this.pausedAgents), agentsToPause, agentsToResume };
     } catch (error) {
       logger.error(`[Consciousness] Erro ao verificar capital: ${error.message}`, { service: "MarketConsciousness" });
-      return { zeroCapitalAgents: [], lowCapitalAgents: [] };
+      return { pausedAgents: [], agentsToPause: [], agentsToResume: [] };
     }
   }
 
@@ -490,14 +513,8 @@ class MarketConsciousnessService {
       const db = require("./DatabaseService");
       const config = db.getConfig();
       
-      // 🔥 PRIMEIRO: VERIFICA CAPITAL DOS ROBÔS
-      const capitalStatus = this._checkCapitalStatus();
-      
-      // Se está em modo estudo por falta de capital, não verifica win rate
-      if (this._pauseReason?.includes("sem capital") && this._mode === "STUDY") {
-        logger.debug(`[Consciousness] Modo estudo ativo por falta de capital. Aguardando reinvestimento.`, { service: "MarketConsciousness" });
-        return;
-      }
+      // 🔥 VERIFICA CAPITAL DOS ROBÔS (PAUSA APENAS OS QUE ESTÃO SEM DINHEIRO)
+      this._checkCapitalStatus();
       
       if (config.mode === "PAPER") {
         if (this._mode === "STUDY" && !this._pauseReason?.includes("sem capital")) {
@@ -553,7 +570,13 @@ class MarketConsciousnessService {
       isOperating: this._mode === "OPERATING",
       isStudying: this._mode === "STUDY",
       isPaused: this._mode === "PAUSED",
+      pausedAgents: Array.from(this.pausedAgents)  // 🔥 NOVO: lista de robôs pausados
     };
+  }
+
+  // 🔥 NOVO: Verifica se um robô específico está pausado
+  isAgentPaused(agentId) {
+    return this.pausedAgents.has(agentId);
   }
 
   getWeeklyPerformance() {
@@ -653,7 +676,8 @@ class MarketConsciousnessService {
       dailyReportsCount: this._dailyReports.length,
       memecoinsTracked: Object.keys(this._memecoins).length,
       hypeAlertsCount: this._hypeAlerts.length,
-      agentId: this.agentId
+      agentId: this.agentId,
+      pausedAgents: Array.from(this.pausedAgents)  // 🔥 NOVO
     };
   }
   
