@@ -13,7 +13,7 @@ const MEMECOIN_META = {
   WIFUSDT:  { name: "WIF",  icon: "🧢", hashtags: ["#WIF", "#dogwifhat", "#WIFcoin"], community: "Twitter/Solana" },
 };
 
-// Rolling 7-day simulated volume baseline (index 0 = today)
+// Rolling 7-day simulated volume baseline
 const _volumeHistory = {};
 MEMECOINS.forEach(sym => {
   _volumeHistory[sym] = Array.from({ length: 7 }, () => Math.random() * 800_000_000 + 200_000_000);
@@ -32,10 +32,8 @@ class MarketConsciousnessService {
     this._pauseReason = null;
     this.isRunning = false;
     
-    // 🆕 IDENTIFICAÇÃO PARA LEARNING BRAIN
     this.agentId = "market_consciousness";
     
-    // 🆕 CONFIGURAÇÕES AJUSTÁVEIS
     this.config = {
       winRateThreshold: 45,
       drawdownThreshold: 8,
@@ -46,7 +44,6 @@ class MarketConsciousnessService {
 
     eventBus.on("tick", () => this._maybeAutoEvaluate());
     
-    // 🆕 ESCUTA MELHORIAS DO LEARNING BRAIN
     eventBus.on("improvement:broadcast", (improvement) => {
       if (improvement.affectedAgents?.includes(this.agentId)) {
         this.applyImprovement(improvement);
@@ -61,7 +58,6 @@ class MarketConsciousnessService {
     this._scheduleDailyReport();
   }
 
-  // 🆕 APLICA MELHORIAS DO LEARNING BRAIN
   applyImprovement(improvement) {
     if (!improvement) return;
     
@@ -87,7 +83,6 @@ class MarketConsciousnessService {
         break;
     }
     
-    // Reseta ajustes após 1 hora
     setTimeout(() => {
       this.config.winRateThreshold = 45;
       this.config.hypeSensitivity = 1.0;
@@ -95,7 +90,6 @@ class MarketConsciousnessService {
     }, 3600000);
   }
 
-  // 🆕 COMPARTILHA INSIGHT COM LEARNING BRAIN
   _shareInsight(type, content, confidence, data = {}) {
     if (!this.config.reportSharingEnabled) return;
     
@@ -186,7 +180,6 @@ class MarketConsciousnessService {
       
       eventBus.emit("daily_report", dailyReport);
       
-      // 🆕 COMPARTILHA COM LEARNING BRAIN
       this._shareInsight("daily_report", 
         `Relatório diário: ${dailyReport.totalTrades} trades, WR ${dailyReport.winRate}%, PnL $${dailyReport.totalPnl}`,
         dailyReport.winRate / 100,
@@ -329,7 +322,6 @@ class MarketConsciousnessService {
         eventBus.emit("alert", { id: alert.id, type: "WARNING", message: alert.message, timestamp: alert.timestamp, read: false });
         logger.warn(`[Consciousness] Hype alert: ${fresh.name} score=${fresh.hypeScore}`, { service: "MarketConsciousness" });
         
-        // 🆕 COMPARTILHA COM LEARNING BRAIN
         this._shareInsight("hype_alert",
           `🚀 ${fresh.name} HYPE DETECTADO! Score ${fresh.hypeScore}`,
           fresh.hypeScore / 100,
@@ -386,7 +378,6 @@ class MarketConsciousnessService {
         generatedAt: new Date().toISOString(),
       };
       
-      // 🆕 COMPARTILHA COM LEARNING BRAIN
       this._shareInsight("weekly_report",
         `Relatório semanal: WR ${winRate}%, DD ${maxDrawdown.toFixed(2)}%, Grade ${grade}, Good=${weAreGood}`,
         winRate / 100,
@@ -414,6 +405,78 @@ class MarketConsciousnessService {
     }
   }
 
+  // 🔥🔥🔥 NOVO: MONITORA CAPITAL DOS ROBÔS 🔥🔥🔥
+  _checkCapitalStatus() {
+    try {
+      const capitalDistributor = require("./CapitalDistributorService");
+      const status = capitalDistributor.getStatus();
+      const agents = status.agents || [];
+      
+      const zeroCapitalAgents = [];
+      const lowCapitalAgents = [];
+      
+      for (const agent of agents) {
+        if (agent.balance <= 0) {
+          zeroCapitalAgents.push(agent.name);
+        } else if (agent.balance < 100) {
+          lowCapitalAgents.push(agent.name);
+        }
+      }
+      
+      // Se tem robôs sem capital, entra em modo estudo
+      if (zeroCapitalAgents.length > 0 && this._mode !== "STUDY" && !this._manuallyPaused) {
+        const oldMode = this._mode;
+        this._mode = "STUDY";
+        this._studyStarted = new Date().toISOString();
+        this._pauseReason = `Robôs sem capital: ${zeroCapitalAgents.join(", ")}. Aguardando reinvestimento.`;
+        
+        logger.warn(`[Consciousness] MODO ESTUDO ATIVADO - ${this._pauseReason}`, { service: "MarketConsciousness" });
+        
+        eventBus.emit("alert", {
+          id: `cs_capital_${Date.now()}`,
+          type: "WARNING",
+          message: `Modo Estudo ativado: ${this._pauseReason}`,
+          timestamp: new Date().toISOString(),
+          read: false
+        });
+        
+        this._shareInsight("mode_change",
+          `Mudança para MODO ESTUDO: ${this._pauseReason}`,
+          0.95,
+          { from: oldMode, to: "STUDY", reason: this._pauseReason, zeroCapitalAgents }
+        );
+      }
+      
+      // Se o capital voltou, retoma operações
+      if (zeroCapitalAgents.length === 0 && lowCapitalAgents.length === 0 && this._mode === "STUDY" && this._pauseReason?.includes("sem capital")) {
+        this._mode = "OPERATING";
+        this._studyStarted = null;
+        this._pauseReason = null;
+        
+        logger.info(`[Consciousness] RETOMANDO OPERAÇÕES - Capital disponível!`, { service: "MarketConsciousness" });
+        
+        eventBus.emit("alert", {
+          id: `cs_capital_return_${Date.now()}`,
+          type: "INFO",
+          message: "Capital restaurado! Retomando operações.",
+          timestamp: new Date().toISOString(),
+          read: false
+        });
+        
+        this._shareInsight("mode_change",
+          `Retorno ao MODO OPERAÇÕES: Capital disponível`,
+          0.9,
+          { from: "STUDY", to: "OPERATING", reason: "capital_restored" }
+        );
+      }
+      
+      return { zeroCapitalAgents, lowCapitalAgents };
+    } catch (error) {
+      logger.error(`[Consciousness] Erro ao verificar capital: ${error.message}`, { service: "MarketConsciousness" });
+      return { zeroCapitalAgents: [], lowCapitalAgents: [] };
+    }
+  }
+
   _maybeAutoEvaluate() {
     const now = Date.now();
     if (this._lastCheck && now - this._lastCheck < 60_000) return;
@@ -427,8 +490,17 @@ class MarketConsciousnessService {
       const db = require("./DatabaseService");
       const config = db.getConfig();
       
+      // 🔥 PRIMEIRO: VERIFICA CAPITAL DOS ROBÔS
+      const capitalStatus = this._checkCapitalStatus();
+      
+      // Se está em modo estudo por falta de capital, não verifica win rate
+      if (this._pauseReason?.includes("sem capital") && this._mode === "STUDY") {
+        logger.debug(`[Consciousness] Modo estudo ativo por falta de capital. Aguardando reinvestimento.`, { service: "MarketConsciousness" });
+        return;
+      }
+      
       if (config.mode === "PAPER") {
-        if (this._mode === "STUDY") {
+        if (this._mode === "STUDY" && !this._pauseReason?.includes("sem capital")) {
           this._mode = "OPERATING";
           this._pauseReason = null;
           logger.info(`🔥 PAPER MODE: Forçando saída do MODO ESTUDO para operar e aprender.`);
@@ -446,20 +518,18 @@ class MarketConsciousnessService {
         logger.warn(`[Consciousness] MODO ESTUDO — ${this._pauseReason}`, { service: "MarketConsciousness" });
         eventBus.emit("alert", { id: `cs_${Date.now()}`, type: "WARNING", message: `MODO ESTUDO ativado: ${this._pauseReason}`, timestamp: new Date().toISOString(), read: false });
         
-        // 🆕 COMPARTILHA COM LEARNING BRAIN
         this._shareInsight("mode_change",
           `Mudança para MODO ESTUDO: ${this._pauseReason}`,
           0.9,
           { from: "OPERATING", to: "STUDY", reason: this._pauseReason, winRate: weeklyWinRate, drawdown: maxDrawdown }
         );
-      } else if (weeklyWinRate >= 55 && maxDrawdown < 8 && this._mode === "STUDY") {
+      } else if (weeklyWinRate >= 55 && maxDrawdown < 8 && this._mode === "STUDY" && !this._pauseReason?.includes("sem capital")) {
         this._mode = "OPERATING";
         this._studyStarted = null;
         this._pauseReason = null;
         logger.info(`[Consciousness] Retomando OPERAÇÕES — WR: ${weeklyWinRate}%`, { service: "MarketConsciousness" });
         eventBus.emit("alert", { id: `cs_${Date.now()}`, type: "INFO", message: `OPERAÇÕES retomadas: WR=${weeklyWinRate}%`, timestamp: new Date().toISOString(), read: false });
         
-        // 🆕 COMPARTILHA COM LEARNING BRAIN
         this._shareInsight("mode_change",
           `Retorno ao MODO OPERAÇÕES: WR ${weeklyWinRate}%`,
           0.9,
@@ -574,7 +644,6 @@ class MarketConsciousnessService {
     return this._hypeAlerts; 
   }
   
-  // 🆕 OBTÉM STATUS COMPLETO
   getStatus() {
     return {
       running: this.isRunning,
@@ -588,7 +657,6 @@ class MarketConsciousnessService {
     };
   }
   
-  // 🆕 ATUALIZA CONFIGURAÇÃO
   updateConfig(newConfig) {
     this.config = { ...this.config, ...newConfig };
     logger.info("MarketConsciousnessService config updated", { service: "MarketConsciousness", config: this.config });
