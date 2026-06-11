@@ -4,17 +4,15 @@ const db = require("./DatabaseService");
 
 class LearningBrainService {
   constructor() {
-    this.isRunning = false;  // 🔥 FLAG ADICIONADA
+    this.isRunning = false;
     
-    // Conhecimento acumulado
     this.knowledge = {
-      patterns: [],      // Padrões descobertos
-      insights: [],      // Insights gerados
-      correlations: [],  // Correlações entre eventos
-      improvements: []   // Melhorias enviadas para robôs
+      patterns: [],
+      insights: [],
+      correlations: [],
+      improvements: []
     };
     
-    // Agentes que estão aprendendo
     this.agents = [
       { id: "trend", name: "Trend Aztron", lastInsight: null, performance: [], weight: 1.0, enabled: true },
       { id: "hft", name: "HFT Service", lastInsight: null, performance: [], weight: 0.9, enabled: true },
@@ -23,35 +21,29 @@ class LearningBrainService {
       { id: "deep", name: "Deep Pattern", lastInsight: null, performance: [], weight: 0.8, enabled: true }
     ];
     
-    // Configurações
     this.config = {
-      processInterval: 300000,    // 5 minutos
-      distributeInterval: 600000, // 10 minutos
+      processInterval: 300000,
+      distributeInterval: 600000,
       minConfidenceToShare: 0.6,
-      maxPatternAge: 86400000     // 24 horas
+      maxPatternAge: 86400000
     };
   }
 
   start() {
-    this.isRunning = true;  // 🔥 FLAG ADICIONADA
+    this.isRunning = true;
     
     logger.info("🧠 LEARNING BRAIN INICIADO - O CÉREBRO QUE APRENDE");
     logger.info("   Aguardando aprendizados dos robôs...");
     
-    // Escuta aprendizados de cada robô
     EventBus.on("learning:trend", (data) => this.receiveLearning("trend", data));
     EventBus.on("learning:hft", (data) => this.receiveLearning("hft", data));
     EventBus.on("learning:arbitrage", (data) => this.receiveLearning("arbitrage", data));
     EventBus.on("learning:sentiment", (data) => this.receiveLearning("sentiment", data));
     EventBus.on("learning:deep", (data) => this.receiveLearning("deep", data));
     
-    // Escuta resultados de trades para avaliar acertos
     EventBus.on("trade:closed", (trade) => this.evaluateLearning(trade));
     
-    // Processa aprendizados periodicamente
     setInterval(() => this.processLearnings(), this.config.processInterval);
-    
-    // Distribui melhorias periodicamente
     setInterval(() => this.distributeImprovements(), this.config.distributeInterval);
     
     logger.info("🧠 LearningBrain ouvindo eventos de aprendizado...");
@@ -61,7 +53,6 @@ class LearningBrainService {
     const agent = this.agents.find(a => a.id === agentId);
     if (!agent || !agent.enabled) return;
     
-    // Verifica confiança mínima
     if (learning.confidence < this.config.minConfidenceToShare) {
       logger.debug(`${agent.name}: Aprendizado ignorado (confiança ${learning.confidence})`);
       return;
@@ -86,14 +77,12 @@ class LearningBrainService {
       timestamp: Date.now()
     });
     
-    // Mantém só os últimos 500 insights
     if (this.knowledge.insights.length > 500) {
       this.knowledge.insights = this.knowledge.insights.slice(-500);
     }
     
     logger.info(`📚 ${agent.name} compartilhou: ${learning.content.substring(0, 100)} (confiança: ${(learning.confidence*100).toFixed(0)}%)`);
     
-    // Processa imediatamente se for um insight importante
     if (learning.priority === "high") {
       this.processUrgentLearning(agentId, learning);
     }
@@ -102,7 +91,6 @@ class LearningBrainService {
   processUrgentLearning(agentId, learning) {
     logger.info(`⚡ Processamento urgente de ${agentId}: ${learning.content}`);
     
-    // Notifica outros agentes que podem se beneficiar
     const affectedAgents = this.findAffectedAgents(agentId, learning);
     
     for (const targetAgent of affectedAgents) {
@@ -122,34 +110,28 @@ class LearningBrainService {
   }
 
   findAffectedAgents(sourceAgentId, learning) {
-    // Lógica para encontrar quais robôs se beneficiam deste aprendizado
     const affected = [];
     
     switch (sourceAgentId) {
       case "trend":
-        // Trend detectou algo? HFT e Arbitrage podem se beneficiar
         if (learning.type === "trend") {
           affected.push("hft", "arbitrage");
         }
         break;
       case "hft":
-        // HFT detectou volatilidade? Trend e Arbitrage se beneficiam
         if (learning.type === "volatility") {
           affected.push("trend", "arbitrage");
         }
         break;
       case "arbitrage":
-        // Arbitrage detectou spread? HFT se beneficia
         if (learning.type === "spread") {
           affected.push("hft");
         }
         break;
       case "sentiment":
-        // Sentimento afeta todos
         affected.push("trend", "hft", "arbitrage", "deep");
         break;
       case "deep":
-        // Padrões profundos afetam todos
         affected.push("trend", "hft", "arbitrage");
         break;
     }
@@ -174,7 +156,6 @@ class LearningBrainService {
       }
     };
     
-    // Tenta encontrar recomendação específica
     for (const [type, mapping] of Object.entries(recommendations)) {
       if (learning.content.toLowerCase().includes(type)) {
         for (const [key, value] of Object.entries(mapping)) {
@@ -194,17 +175,10 @@ class LearningBrainService {
     logger.info("🧠 Processando aprendizados coletivos...");
     
     const recentInsights = this.knowledge.insights.slice(-100);
-    
-    // 1. Busca PADRÕES entre diferentes robôs
     const patterns = this.findCrossPatterns(recentInsights);
-    
-    // 2. Busca CORRELAÇÕES temporais
     const correlations = this.findTemporalCorrelations(recentInsights);
-    
-    // 3. Gera INSIGHTS derivados
     const derivedInsights = this.generateDerivedInsights(patterns, correlations);
     
-    // 4. Salva novos padrões
     for (const pattern of patterns) {
       const exists = this.knowledge.patterns.some(p => 
         p.name === pattern.name && 
@@ -219,35 +193,28 @@ class LearningBrainService {
         });
         logger.info(`🎯 NOVO PADRÃO: ${pattern.name} - ${pattern.description}`);
       } else {
-        // Atualiza ocorrência
         const existing = this.knowledge.patterns.find(p => p.name === pattern.name);
         if (existing) existing.occurrences++;
       }
     }
     
-    // 5. Distribui novos insights
     for (const insight of derivedInsights) {
       this.knowledge.insights.push(insight);
       logger.info(`💡 NOVO INSIGHT: ${insight.content}`);
     }
     
-    // 6. Notifica agentes afetados
     this.notifyAffectedAgents(patterns, derivedInsights);
-    
-    // Limpa padrões antigos
     this.cleanOldPatterns();
   }
 
   findCrossPatterns(insights) {
     const patterns = [];
     
-    // Agrupa por tipo e tempo
     const trendInsights = insights.filter(i => i.agent === "trend" && i.timestamp > Date.now() - 3600000);
     const sentimentInsights = insights.filter(i => i.agent === "sentiment" && i.timestamp > Date.now() - 3600000);
     const hftInsights = insights.filter(i => i.agent === "hft" && i.timestamp > Date.now() - 3600000);
     const arbitrageInsights = insights.filter(i => i.agent === "arbitrage" && i.timestamp > Date.now() - 3600000);
     
-    // Padrão: Trend viu alta + Sentimento viu medo
     const trendBullish = trendInsights.some(i => 
       i.content.toLowerCase().includes("alta") || 
       i.content.toLowerCase().includes("bull") ||
@@ -264,14 +231,13 @@ class LearningBrainService {
       patterns.push({
         name: "FEAR_BULLISH_REVERSAL",
         description: "Trend indica alta mas mercado está com medo - possível reversão ou oportunidade de entrada",
-        recommendation: "REDUZIR_TAMANHO_POSICAO_E_AGUARDAR_CONFIRMACAO",
+        recommendation: "AUMENTAR_TAMANHO_POSICAO",
         affectedAgents: ["trend", "hft"],
         confidence: 0.75,
         severity: "medium"
       });
     }
     
-    // Padrão: Arbitrage viu spread + HFT viu volatilidade
     const arbitrageSpread = arbitrageInsights.some(i => 
       i.content.toLowerCase().includes("spread")
     );
@@ -292,7 +258,6 @@ class LearningBrainService {
       });
     }
     
-    // Padrão: Sentimento extremo + Deep pattern confirmando
     const sentimentExtreme = sentimentInsights.some(i => 
       i.content.toLowerCase().includes("extreme") || 
       (i.confidence > 0.8 && (i.content.includes("fear") || i.content.includes("greed")))
@@ -303,8 +268,8 @@ class LearningBrainService {
         name: "EXTREME_SENTIMENT_ALERT",
         description: "Sentimento extremo detectado - possível ponto de virada do mercado",
         recommendation: "REVISAR_TODAS_POSICOES_E_CONSIDERAR_CONTRA_TREND",
-        affectedAgents: ["trend", "hft", "arbitrage"],
-        confidence: 0.7,
+        affectedAgents: ["trend", "hft", "arbitrage", "deep"],
+        confidence: 0.85,
         severity: "high"
       });
     }
@@ -314,7 +279,6 @@ class LearningBrainService {
 
   findTemporalCorrelations(insights) {
     const correlations = [];
-    // Implementar análise de correlação temporal
     return correlations;
   }
 
@@ -357,7 +321,7 @@ class LearningBrainService {
     
     for (const insight of insights) {
       notifications.push({
-        to: null, // broadcast
+        to: null,
         from: "learning_brain",
         type: "insight",
         content: insight.content,
@@ -369,7 +333,6 @@ class LearningBrainService {
     }
     
     for (const notif of notifications) {
-      // Salva melhoria
       this.knowledge.improvements.push({
         ...notif,
         sent: false
@@ -393,7 +356,6 @@ class LearningBrainService {
     const pendingImprovements = this.knowledge.improvements.filter(i => !i.sent && !i.expired);
     
     for (const improvement of pendingImprovements) {
-      // Verifica se ainda é relevante (menos de 1 hora)
       if (Date.now() - improvement.timestamp > 3600000) {
         improvement.expired = true;
         continue;
@@ -411,7 +373,6 @@ class LearningBrainService {
       logger.info(`📤 Melhoria distribuída: ${improvement.recommendation}`);
     }
     
-    // Limpa melhorias antigas
     this.knowledge.improvements = this.knowledge.improvements.filter(i => 
       !i.expired && Date.now() - i.timestamp < 86400000
     );
@@ -428,17 +389,14 @@ class LearningBrainService {
       tradeId: trade.id
     });
     
-    // Mantém só últimos 100 trades
     if (agent.performance.length > 100) {
       agent.performance.shift();
     }
     
-    // Calcula win rate recente
     const recentTrades = agent.performance.slice(-20);
     const wins = recentTrades.filter(t => t.profit > 0).length;
     const winRate = wins / recentTrades.length;
     
-    // Ajusta peso baseado em performance
     if (winRate > 0.6) {
       agent.weight = Math.min(1.0, agent.weight + 0.02);
     } else if (winRate < 0.4) {
@@ -453,13 +411,11 @@ class LearningBrainService {
     );
   }
 
-  // ==================== 🔥 MÉTODO PREDICT SIGNAL ====================
-
+  // 🔥 PREDICT SIGNAL CORRIGIDO
   predictSignal(signal) {
     try {
       const { symbol, type, confidence, agent, strategy } = signal;
       
-      // Busca padrões similares no histórico
       const similarPatterns = this.knowledge.patterns.filter(p => 
         p.affectedAgents?.includes(agent) && 
         p.confidence > 0.6
@@ -468,23 +424,24 @@ class LearningBrainService {
       if (similarPatterns.length > 0) {
         const bestPattern = similarPatterns.sort((a, b) => b.confidence - a.confidence)[0];
         
-        // Ajusta confiança baseada no padrão
         let adjustedConfidence = confidence;
         let recommendation = "FOLLOW";
         
+        // 🔥 CORREÇÃO: Sentimento extremo é OPORTUNIDADE!
         if (bestPattern.name === "EXTREME_SENTIMENT_ALERT") {
+          // FEAR = comprar, GREED = vender (estratégia contrária)
           if (type === "BUY") {
-            adjustedConfidence = Math.max(40, confidence - 20);
-            recommendation = "SKIP";
+            adjustedConfidence = Math.min(95, confidence + 15);
+            recommendation = "FOLLOW";
           } else if (type === "SELL") {
-            adjustedConfidence = Math.min(95, confidence + 10);
+            adjustedConfidence = Math.min(95, confidence + 15);
             recommendation = "FOLLOW";
           }
         }
         
         if (bestPattern.name === "FEAR_BULLISH_REVERSAL") {
           if (type === "BUY") {
-            adjustedConfidence = Math.min(95, confidence + 15);
+            adjustedConfidence = Math.min(95, confidence + 20);
             recommendation = "FOLLOW";
           }
         }
@@ -505,24 +462,33 @@ class LearningBrainService {
         };
       }
       
-      // Verifica sentimento extremo recente
       const recentExtremeSentiment = this.knowledge.insights.some(i => 
         i.type === "extreme_sentiment" && 
         i.content?.toLowerCase().includes("extreme") &&
         (Date.now() - new Date(i.timestamp).getTime()) < 3600000
       );
       
-      if (recentExtremeSentiment && type === "BUY") {
-        return {
-          predictedWinRate: 45,
-          confidence: Math.max(40, confidence - 15),
-          patternUsed: "extreme_sentiment",
-          basedOnTrades: 0,
-          recommendation: "SKIP"
-        };
+      if (recentExtremeSentiment) {
+        // 🔥 CORREÇÃO: Sentimento extremo é OPOSTO do que você pensa!
+        if (type === "BUY") {
+          return {
+            predictedWinRate: 70,
+            confidence: Math.min(95, confidence + 10),
+            patternUsed: "extreme_sentiment_contrarian",
+            basedOnTrades: 0,
+            recommendation: "FOLLOW"
+          };
+        } else if (type === "SELL") {
+          return {
+            predictedWinRate: 70,
+            confidence: Math.min(95, confidence + 10),
+            patternUsed: "extreme_sentiment_contrarian",
+            basedOnTrades: 0,
+            recommendation: "FOLLOW"
+          };
+        }
       }
       
-      // Verifica performance do agente
       const agentPerf = this.agents.find(a => a.id === agent);
       if (agentPerf && agentPerf.performance.length >= 10) {
         const recentTrades = agentPerf.performance.slice(-10);
@@ -535,7 +501,7 @@ class LearningBrainService {
             confidence: Math.max(30, confidence - 20),
             patternUsed: "poor_performance",
             basedOnTrades: recentTrades.length,
-            recommendation: "SKIP"
+            recommendation: "CAUTIOUS"
           };
         }
         
@@ -550,13 +516,12 @@ class LearningBrainService {
         }
       }
       
-      // Comportamento padrão
       return {
-        predictedWinRate: 50,
+        predictedWinRate: 55,
         confidence: confidence,
         patternUsed: null,
         basedOnTrades: 0,
-        recommendation: confidence > 70 ? "FOLLOW" : confidence > 50 ? "CAUTIOUS" : "WAIT"
+        recommendation: confidence > 65 ? "FOLLOW" : confidence > 50 ? "CAUTIOUS" : "WAIT"
       };
       
     } catch (error) {
