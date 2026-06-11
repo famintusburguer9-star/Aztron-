@@ -25,22 +25,22 @@ class SentimentAgentService {
     this.isRunning = false;
     this.isPaused = false;
     
-    // Configurações
+    // 🔥 CONFIGURAÇÕES CORRIGIDAS (MAIS SENSÍVEIS)
     this.config = {
-      minConfidenceToTrade: 60,        // Confiança mínima para gerar sinal
-      cooldownSeconds: 180,            // 3 minutos entre sinais do mesmo símbolo
-      extremeCooldownSeconds: 60,      // 1 minuto para sinais extremos
-      maxPositionSizeMultiplier: 2.0,  // Máximo multiplicador de posição
-      minPositionSizeMultiplier: 0.3,  // Mínimo multiplicador de posição
-      useContrarianStrategy: true,     // Opera contra o sentimento extremo
-      enableMomentumFilter: true,      // Filtra por tendência do sentimento
+      minConfidenceToTrade: 50,        // CORRIGIDO: 60 → 50
+      cooldownSeconds: 60,             // CORRIGIDO: 180 → 60 segundos
+      extremeCooldownSeconds: 30,      // CORRIGIDO: 60 → 30 segundos
+      maxPositionSizeMultiplier: 2.0,
+      minPositionSizeMultiplier: 0.3,
+      useContrarianStrategy: true,
+      enableMomentumFilter: false,     // CORRIGIDO: true → false
       symbols: ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"],
-      aggressionLevel: 0.7,            // 0 = conservador, 1 = agressivo
+      aggressionLevel: 0.9,            // CORRIGIDO: 0.7 → 0.9
     };
     
     // Estado interno
     this.lastSignalTime = {};
-    this.sentimentHistory = {};         // Histórico de sentimento por símbolo
+    this.sentimentHistory = {};
     this.performanceStats = {
       totalSignals: 0,
       winningSignals: 0,
@@ -49,13 +49,13 @@ class SentimentAgentService {
       byPattern: {}
     };
     
-    // Thresholds para cada nível de sentimento
+    // 🔥 THRESHOLDS AJUSTADOS
     this.thresholds = {
-      EXTREME_FEAR: { buyConfidence: 85, sellConfidence: 0, sizeMultiplier: 1.5, direction: "BUY" },
-      FEAR: { buyConfidence: 65, sellConfidence: 0, sizeMultiplier: 1.2, direction: "BUY" },
+      EXTREME_FEAR: { buyConfidence: 75, sellConfidence: 0, sizeMultiplier: 1.5, direction: "BUY" },
+      FEAR: { buyConfidence: 55, sellConfidence: 0, sizeMultiplier: 1.2, direction: "BUY" },
       NEUTRAL: { buyConfidence: 45, sellConfidence: 45, sizeMultiplier: 0.8, direction: null },
-      GREED: { buyConfidence: 0, sellConfidence: 65, sizeMultiplier: 1.1, direction: "SELL" },
-      EXTREME_GREED: { buyConfidence: 0, sellConfidence: 85, sizeMultiplier: 1.4, direction: "SELL" }
+      GREED: { buyConfidence: 0, sellConfidence: 55, sizeMultiplier: 1.1, direction: "SELL" },
+      EXTREME_GREED: { buyConfidence: 0, sellConfidence: 75, sizeMultiplier: 1.4, direction: "SELL" }
     };
     
     // Inicializa histórico
