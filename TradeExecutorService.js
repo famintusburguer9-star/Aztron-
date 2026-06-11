@@ -336,19 +336,23 @@ class TradeExecutorService {
       }
     }
     
+    // 🔥 CORREÇÃO: NÃO duplica o multiplicador!
     const positionInfo = risk.calculatePositionSize(symbol, ticker.price, cfg.stopLoss, agent, adjustedConfidence);
+    let finalQty = positionInfo.qty;
     
-    if (positionInfo.qty && positionInfo.qty > 0) {
-      positionInfo.qty = positionInfo.qty * sizeMultiplier;
+    // Aplica multiplicador de tamanho (apenas se necessário)
+    if (sizeMultiplier !== 1.0 && finalQty > 0) {
+      finalQty = finalQty * sizeMultiplier;
+      logger.info(`📊 Aplicando multiplicador: ${sizeMultiplier}x -> ${finalQty.toFixed(6)} ${symbol}`, { service: "TradeExecutor" });
     }
     
-    if (!positionInfo.qty || positionInfo.qty <= 0) {
-      logger.warn(`❌ Invalid quantity: ${positionInfo.qty} for ${symbol}`, { service: "TradeExecutor" });
+    if (!finalQty || finalQty <= 0) {
+      logger.warn(`❌ Invalid quantity: ${finalQty} for ${symbol}`, { service: "TradeExecutor" });
       return { success: false, reason: "Invalid quantity" };
     }
     
-    const estimatedCost = positionInfo.qty * ticker.price;
-    logger.info(`🔍 DEBUG: estimatedCost = ${estimatedCost} (sizeMultiplier: ${sizeMultiplier}x, trendMultiplier: ${trendMultiplier}x)`, { service: "TradeExecutor" });
+    const estimatedCost = finalQty * ticker.price;
+    logger.info(`🔍 DEBUG: estimatedCost = ${estimatedCost} (qty: ${finalQty}, price: ${ticker.price})`, { service: "TradeExecutor" });
     
     // 🔥 REMOVA ESTA CHAMADA (já vai ser feita no ExchangeAdapter)
     // const capitalRequest = await this._requestCapital(agent, estimatedCost, `Trade: ${side} ${symbol}`);
@@ -359,7 +363,7 @@ class TradeExecutorService {
       return { success: false, reason: validation.errors.join("; ") };
     }
 
-    const slip = slippage.estimate(symbol, side, positionInfo.qty);
+    const slip = slippage.estimate(symbol, side, finalQty);
     if (!slip.acceptable) {
       return { success: false, reason: `Slippage too high: ${slip.estimated}%` };
     }
@@ -391,7 +395,7 @@ class TradeExecutorService {
         : ticker.price * (1 - cfg.takeProfit / 100);
       
       logger.info(`🔍 DEBUG: Chamando exchange.placeOrder para ${symbol}`, { service: "TradeExecutor" });
-      const order = await exchange.placeOrder(symbol, side, positionInfo.qty, ticker.price, agent);
+      const order = await exchange.placeOrder(symbol, side, finalQty, ticker.price, agent);
       
       const trade = {
         id: `trade_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -403,7 +407,7 @@ class TradeExecutorService {
         status: "OPEN",
         entryPrice: order.price,
         exitPrice: null,
-        qty: positionInfo.qty,
+        qty: finalQty,
         estimatedCost: estimatedCost,
         pnl: 0,
         pnlPct: 0,
@@ -426,7 +430,7 @@ class TradeExecutorService {
       eventBus.emit("trade", { action: "OPEN", trade });
       eventBus.emit("trade:opened", trade);
       
-      logger.info(`✅ Trade opened: ${side} ${positionInfo.qty.toFixed(6)} ${symbol} @ $${order.price.toFixed(2)} (agent: ${agent})`, { 
+      logger.info(`✅ Trade opened: ${side} ${finalQty.toFixed(6)} ${symbol} @ $${order.price.toFixed(2)} (agent: ${agent})`, { 
         service: "TradeExecutor",
         tradeId: trade.id,
         agent: agent,
