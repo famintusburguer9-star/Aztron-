@@ -20,6 +20,10 @@ class TradeExecutorService {
     // 🆕 FILA DE SINAIS PENDENTES (para quando não tem saldo)
     this.pendingSignals = [];
     
+    // 🔥 NOVO: CONTROLE DE PAUSA POR AGENTE (Consciência IA)
+    this.pausedAgents = new Set(); // Agentes pausados pela Consciência
+    this.agentPauseReasons = {};   // Motivo da pausa por agente
+    
     // 🆕 HISTÓRICO DE PERFORMANCE POR AGENTE
     this.agentPerformance = {
       trend: { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null, totalWins: 0, totalLosses: 0, winRate: 0 },
@@ -60,6 +64,22 @@ class TradeExecutorService {
     eventBus.on("capital:return", (capitalReturn) => {
       logger.info(`💸 Capital retornou para ${capitalReturn.agentId}: $${capitalReturn.amount}`, { service: "TradeExecutor" });
       this._processPendingSignals(capitalReturn.agentId);
+    });
+    
+    // 🔥🔥🔥 NOVO: ESCUTA EVENTOS DE PAUSA/RETOMADA DA CONSCIÊNCIA IA 🔥🔥🔥
+    eventBus.on("agent:pause", ({ agentId, reason }) => {
+      this.pausedAgents.add(agentId);
+      this.agentPauseReasons[agentId] = reason;
+      logger.warn(`⏸️ TradeExecutor: Agente ${agentId} pausado pela Consciência. Motivo: ${reason}`, { service: "TradeExecutor" });
+    });
+    
+    eventBus.on("agent:resume", ({ agentId, reason }) => {
+      this.pausedAgents.delete(agentId);
+      delete this.agentPauseReasons[agentId];
+      logger.info(`▶️ TradeExecutor: Agente ${agentId} retomado. Motivo: ${reason}`, { service: "TradeExecutor" });
+      
+      // Processa sinais pendentes para este agente
+      this._processPendingSignals(agentId);
     });
     
     // 🔥 ESCUTA APRENDIZADO COMPARTILHADO DO LEARNING BRAIN
@@ -141,6 +161,11 @@ class TradeExecutorService {
     }, 3600000);
   }
 
+  // 🔥 VERIFICA SE UM AGENTE ESTÁ PAUSADO
+  _isAgentPaused(agentId) {
+    return this.pausedAgents.has(agentId);
+  }
+
   async handleSignal(signal) {
     logger.info(`🔍 DEBUG: handleSignal chamado! running=${this.running}, paused=${this.paused}`, { service: "TradeExecutor" });
     
@@ -154,12 +179,31 @@ class TradeExecutorService {
       return;
     }
     
+    const agent = signal.agent || this._getAgentFromStrategy(signal.strategy);
+    
+    // 🔥🔥🔥 VERIFICA SE O AGENTE ESTÁ PAUSADO PELA CONSCIÊNCIA 🔥🔥🔥
+    if (this._isAgentPaused(agent)) {
+      logger.warn(`⏸️ Agente ${agent} está pausado pela Consciência. Motivo: ${this.agentPauseReasons[agent] || "sem capital"}`, { service: "TradeExecutor" });
+      
+      // Armazena o sinal para quando o agente for retomado
+      this.pendingSignals.push({
+        symbol: signal.symbol,
+        side: signal.type,
+        strategy: signal.strategy,
+        confidence: signal.confidence,
+        agent: agent,
+        prediction: null,
+        timestamp: Date.now(),
+        originalSignal: signal
+      });
+      logger.info(`📥 Signal enfileirado para ${agent} (agente pausado). Total pendentes: ${this.pendingSignals.length}`, { service: "TradeExecutor" });
+      return;
+    }
+    
     logger.info(`📡 Signal received: ${signal.type} ${signal.symbol} (conf: ${signal.confidence}%) from ${signal.strategy || signal.agent}`, { 
       service: "TradeExecutor",
-      agent: signal.agent || this._getAgentFromStrategy(signal.strategy)
+      agent: agent
     });
-    
-    const agent = signal.agent || this._getAgentFromStrategy(signal.strategy);
     
     // 🔥 CHAMA LEARNING BRAIN PARA PREDIZER O SINAL
     let prediction = null;
@@ -277,6 +321,12 @@ class TradeExecutorService {
       return { success: false, reason: "Trading paused" };
     }
     
+    // 🔥 VERIFICA NOVAMENTE SE O AGENTE ESTÁ PAUSADO
+    if (this._isAgentPaused(agent)) {
+      logger.warn(`⏸️ executeTrade: Agente ${agent} está pausado. Ignorando trade.`, { service: "TradeExecutor" });
+      return { success: false, reason: "AGENT_PAUSED_BY_CONSCIOUSNESS" };
+    }
+    
     const ticker = exchange.getTicker(symbol);
     if (!ticker) {
       logger.error(`❌ No ticker data for ${symbol}`, { service: "TradeExecutor" });
@@ -354,10 +404,6 @@ class TradeExecutorService {
     const estimatedCost = finalQty * ticker.price;
     logger.info(`🔍 DEBUG: estimatedCost = ${estimatedCost} (qty: ${finalQty}, price: ${ticker.price})`, { service: "TradeExecutor" });
     
-    // 🔥 REMOVA ESTA CHAMADA (já vai ser feita no ExchangeAdapter)
-    // const capitalRequest = await this._requestCapital(agent, estimatedCost, `Trade: ${side} ${symbol}`);
-    // A reserva será feita APENAS no ExchangeAdapter.placeOrder()
-    
     const validation = risk.validateTrade(symbol, side, estimatedCost, agent);
     if (!validation.approved) {
       return { success: false, reason: validation.errors.join("; ") };
@@ -381,7 +427,7 @@ class TradeExecutorService {
       
       // Ajusta stop loss baseado na tendência
       if (marketTrend.trend === "bullish" && side === "BUY") {
-        stopLossPercent = stopLossPercent * 0.8; // Stop mais apertado em tendência favorável
+        stopLossPercent = stopLossPercent * 0.8;
       } else if (marketTrend.trend === "bearish" && side === "SELL") {
         stopLossPercent = stopLossPercent * 0.8;
       }
@@ -494,6 +540,9 @@ class TradeExecutorService {
         } else if (result.reason === "INSUFFICIENT_BALANCE") {
           this.pendingSignals.push(signal);
           logger.info(`📥 Sinal pendente recolocado na fila para ${agentId} (saldo ainda insuficiente)`, { service: "TradeExecutor" });
+        } else if (result.reason === "AGENT_PAUSED_BY_CONSCIOUSNESS") {
+          this.pendingSignals.push(signal);
+          logger.info(`📥 Sinal pendente recolocado na fila para ${agentId} (agente pausado)`, { service: "TradeExecutor" });
         } else {
           logger.warn(`❌ Sinal pendente falhou: ${result.reason}`, { service: "TradeExecutor" });
         }
@@ -699,7 +748,8 @@ class TradeExecutorService {
         totalPnl: this.getTotalOpenPnl()
       },
       byAgent: this._getStatsByAgent(allClosedTrades),
-      agentPerformance: this.agentPerformance
+      agentPerformance: this.agentPerformance,
+      pausedAgents: Array.from(this.pausedAgents)  // 🔥 NOVO: retorna agentes pausados
     };
   }
   
@@ -744,6 +794,16 @@ class TradeExecutorService {
   
   getAgentPerformance(agent) {
     return this.agentPerformance[agent] || { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null };
+  }
+  
+  // 🔥 NOVO: Verifica se um agente está pausado
+  isAgentPaused(agentId) {
+    return this.pausedAgents.has(agentId);
+  }
+  
+  // 🔥 NOVO: Retorna todos os agentes pausados
+  getPausedAgents() {
+    return Array.from(this.pausedAgents);
   }
   
   async switchToLiveMode() {
