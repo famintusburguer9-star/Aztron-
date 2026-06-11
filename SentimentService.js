@@ -178,17 +178,24 @@ class SentimentService {
     }
   }
 
+  // 🔥 START CORRIGIDO - SEMPRE CHAMA INITIALIZE SE NÃO INICIALIZOU
   async start() {
-    if (this.isRunning) return { success: false, reason: "Already running" };
+    logger.info("🔍 SentimentService.start() CHAMADO!", { service: "Sentiment" });
     
-    // Se já inicializou, só marca como running
+    if (this.isRunning) {
+      logger.info("ℹ️ SentimentService já está rodando", { service: "Sentiment" });
+      return { success: false, reason: "Already running" };
+    }
+    
+    // 🔥 CORREÇÃO: Sempre inicializa se não estiver inicializado
     if (!this.initialized) {
+      logger.info("🔄 SentimentService não inicializado, chamando initialize()...", { service: "Sentiment" });
       await this.initialize();
     } else {
       this.isRunning = true;
     }
     
-    logger.info("SentimentService started - monitorando mercado em tempo real", { service: "Sentiment" });
+    logger.info("✅ SentimentService started - monitorando mercado em tempo real", { service: "Sentiment" });
     return { success: true };
   }
 
