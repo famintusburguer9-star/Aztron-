@@ -6,16 +6,16 @@ const db = require("./DatabaseService");
 // 🆕 IMPORT PARA INTEGRAÇÃO COM NOVOS SERVIÇOS
 const capitalDistributor = require("./CapitalDistributorService");
 
-// ─── CONFIGURAÇÕES DO HFT ─────────────────────────────────────────────────────
+// ─── CONFIGURAÇÕES DO HFT (CORRIGIDAS) ────────────────────────────────────────
 const HFT_CONFIG = {
   SYMBOLS: ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"],
-  MAX_POSITION_SIZE: 0.02,        // 2% do capital por trade
-  STOP_LOSS: 0.003,               // 0.3% stop loss
-  TAKE_PROFIT: 0.006,             // 0.6% take profit
-  MIN_CONFIDENCE: 50,
-  MAX_TRADES_PER_HOUR: 20,
-  COOLDOWN_SECONDS: 30,
-  SCAN_INTERVAL: 5000,            // 5 segundos
+  MAX_POSITION_SIZE: 0.01,            // REDUZIDO: 2% → 1% do capital por trade
+  STOP_LOSS: 0.01,                    // AUMENTADO: 0.3% → 1% stop loss
+  TAKE_PROFIT: 0.02,                  // AUMENTADO: 0.6% → 2% take profit
+  MIN_CONFIDENCE: 55,                 // AUMENTADO: 50 → 55
+  MAX_TRADES_PER_HOUR: 8,             // REDUZIDO: 20 → 8
+  COOLDOWN_SECONDS: 60,               // AUMENTADO: 30 → 60 segundos
+  SCAN_INTERVAL: 10000,               // AUMENTADO: 5 → 10 segundos
 };
 
 // ─── ESTRATÉGIAS HFT ─────────────────────────────────────────────────────────
@@ -23,40 +23,38 @@ const STRATEGIES = {
   MEAN_REVERSION: (price, indicators) => {
     const recentAvg = indicators?.avgPrice || price;
     const deviation = ((price - recentAvg) / recentAvg) * 100;
-    if (deviation < -0.2) return { signal: "BUY", confidence: 70 + Math.abs(deviation) * 50 };
-    if (deviation > 0.2) return { signal: "SELL", confidence: 70 + deviation * 50 };
+    if (deviation < -0.3) return { signal: "BUY", confidence: 65 + Math.abs(deviation) * 40 };
+    if (deviation > 0.3) return { signal: "SELL", confidence: 65 + deviation * 40 };
     return { signal: "HOLD", confidence: 0 };
   },
   
   BREAKOUT: (price, indicators) => {
     const high = indicators?.high24h || price * 1.01;
     const low = indicators?.low24h || price * 0.99;
-    if (price > high) return { signal: "BUY", confidence: 75 };
-    if (price < low) return { signal: "SELL", confidence: 75 };
+    if (price > high) return { signal: "BUY", confidence: 70 };
+    if (price < low) return { signal: "SELL", confidence: 70 };
     return { signal: "HOLD", confidence: 0 };
   },
   
   MOMENTUM: (price, indicators) => {
     const priceChange = indicators?.change5m || 0;
-    if (priceChange > 0.15) return { signal: "BUY", confidence: 65 + priceChange * 50 };
-    if (priceChange < -0.15) return { signal: "SELL", confidence: 65 + Math.abs(priceChange) * 50 };
+    if (priceChange > 0.2) return { signal: "BUY", confidence: 60 + priceChange * 40 };
+    if (priceChange < -0.2) return { signal: "SELL", confidence: 60 + Math.abs(priceChange) * 40 };
     return { signal: "HOLD", confidence: 0 };
   },
   
-  // 🆕 NOVA ESTRATÉGIA: VWAP (Volume Weighted Average Price)
   VWAP: (price, indicators) => {
     const vwap = indicators?.vwap || price;
     const deviation = ((price - vwap) / vwap) * 100;
-    if (deviation < -0.15) return { signal: "BUY", confidence: 68 };
-    if (deviation > 0.15) return { signal: "SELL", confidence: 68 };
+    if (deviation < -0.2) return { signal: "BUY", confidence: 65 };
+    if (deviation > 0.2) return { signal: "SELL", confidence: 65 };
     return { signal: "HOLD", confidence: 0 };
   },
   
-  // 🆕 NOVA ESTRATÉGIA: Order Book Imbalance
   ORDER_BOOK: (price, indicators) => {
     const bidAskRatio = indicators?.bidAskRatio || 1;
-    if (bidAskRatio > 1.2) return { signal: "BUY", confidence: 72 };
-    if (bidAskRatio < 0.8) return { signal: "SELL", confidence: 72 };
+    if (bidAskRatio > 1.15) return { signal: "BUY", confidence: 68 };
+    if (bidAskRatio < 0.85) return { signal: "SELL", confidence: 68 };
     return { signal: "HOLD", confidence: 0 };
   }
 };
@@ -73,6 +71,10 @@ class HFTService {
     this._intervalId = null;
     this._priceHistory = {};
     
+    // 🔥 CONTROLE DE PERDAS CONSECUTIVAS
+    this.consecutiveLosses = 0;
+    this.maxConsecutiveLosses = 5; // Para após 5 perdas seguidas
+    
     // Integração com Capital Distributor
     this.agentId = "hft";
     this.capitalAllocated = 0;
@@ -85,7 +87,7 @@ class HFTService {
     
     // Controle de sinais emitidos (evita spam)
     this.lastSignalEmitted = {};
-    this.signalCooldown = 60000; // 1 minuto entre sinais do mesmo símbolo
+    this.signalCooldown = 120000; // 2 minutos entre sinais do mesmo símbolo
     
     // Inicializa histórico de preços
     HFT_CONFIG.SYMBOLS.forEach(sym => {
@@ -96,12 +98,12 @@ class HFTService {
     // Escuta ticks de preço
     eventBus.on("tick", (prices) => this._onTick(prices));
     
-    // 🔥 CONSUME SINAIS DO SIGNAL SERVICE (para executar trades)
+    // CONSUME SINAIS DO SIGNAL SERVICE
     eventBus.on("signal", async (signal) => {
       await this._onExternalSignal(signal);
     });
     
-    // 🔥 ESCUTA ALOCAÇÃO DE CAPITAL
+    // ESCUTA ALOCAÇÃO DE CAPITAL
     eventBus.on(`capital:${this.agentId}:allocated`, (data) => {
       this.capitalAllocated = data.amount;
       logger.info(`💰 HFT recebeu capital: $${this.capitalAllocated} (${data.mode} MODE)`, { service: "HFT" });
@@ -112,7 +114,7 @@ class HFTService {
       }
     });
     
-    // 🔥 ESCUTA RETORNO DE CAPITAL
+    // ESCUTA RETORNO DE CAPITAL
     eventBus.on("capital:return", ({ agentId, amount, reason }) => {
       if (agentId === this.agentId && amount !== 0) {
         this.capitalAllocated += amount;
@@ -120,7 +122,7 @@ class HFTService {
       }
     });
     
-    // 🔥 ESCUTA MELHORIAS DO LEARNING BRAIN
+    // ESCUTA MELHORIAS DO LEARNING BRAIN
     eventBus.on("improvement:broadcast", (improvement) => {
       if (improvement.affectedAgents?.includes(this.agentId) || !improvement.to) {
         this.applyImprovement(improvement);
@@ -131,7 +133,7 @@ class HFTService {
       this.applyImprovement(improvement);
     });
     
-    logger.info("HFTService initialized - emitindo sinais próprios", { service: "HFT" });
+    logger.info("HFTService initialized - Configurações corrigidas", { service: "HFT" });
   }
   
   async initialize() {
@@ -167,15 +169,18 @@ class HFTService {
     }
   }
   
-  // 🔥 PROCESSA SINAIS EXTERNOS (do SignalService)
   async _onExternalSignal(signal) {
     if (!this.running) return;
     if (signal.status !== "ACTIVE") return;
     if (!signal.symbol) return;
     if (this.capitalAllocated <= 0) return;
-    
-    // Só processa sinais que não são de outros agentes HFT (evita loop)
     if (signal.agent === this.agentId) return;
+    
+    // 🔥 VERIFICA SE JÁ PERDEU MUITAS SEGUIDAS
+    if (this.consecutiveLosses >= this.maxConsecutiveLosses) {
+      logger.warn(`⛔ HFT com ${this.consecutiveLosses} perdas consecutivas. Pausando novos trades.`, { service: "HFT" });
+      return;
+    }
     
     const now = Date.now();
     const lastTrade = this.lastTradeTime[signal.symbol];
@@ -195,17 +200,21 @@ class HFTService {
     await this._executeTrade(signal.type, signal.symbol, ticker.price, signal.confidence);
   }
   
-  // 🔥 EMITE SINAL PRÓPRIO PARA O TRADEEXECUTOR
   _emitOwnSignal(signalType, symbol, confidence, strategy, reasoning) {
     const now = Date.now();
     const lastSignal = this.lastSignalEmitted[symbol] || 0;
     
     if (now - lastSignal < this.signalCooldown) {
-      logger.debug(`⏸️ HFT em cooldown para ${symbol} - aguardando ${Math.ceil((this.signalCooldown - (now - lastSignal)) / 1000)}s`, { service: "HFT" });
       return;
     }
     
     if (confidence < HFT_CONFIG.MIN_CONFIDENCE) return;
+    
+    // 🔥 NÃO EMITE SINAL SE ESTIVER COM MUITAS PERDAS
+    if (this.consecutiveLosses >= this.maxConsecutiveLosses) {
+      logger.debug(`⏸️ HFT não emite sinal (${this.consecutiveLosses} perdas consecutivas)`, { service: "HFT" });
+      return;
+    }
     
     const signal = {
       type: signalType,
@@ -215,13 +224,9 @@ class HFTService {
       agent: this.agentId,
       status: "ACTIVE",
       reason: reasoning,
-      sizeMultiplier: 0.8 + (confidence / 100), // HFT usa posições menores
+      sizeMultiplier: 0.7 + (confidence / 100),
       priority: confidence > 75 ? "HIGH" : "NORMAL",
-      metadata: {
-        source: "hft_scan",
-        strategy: strategy,
-        timestamp: now
-      }
+      metadata: { source: "hft_scan", strategy: strategy, timestamp: now }
     };
     
     this.lastSignalEmitted[symbol] = now;
@@ -239,19 +244,17 @@ class HFTService {
     
     switch(improvement.recommendation) {
       case "AUMENTAR_SENSIBILIDADE":
-      case "AUMENTAR_SENSIBILIDADE_SPREAD_E_VELOCIDADE":
-        this.tempScanMultiplier = Math.max(0.5, this.tempScanMultiplier * 0.8);
+        this.tempScanMultiplier = Math.max(0.5, this.tempScanMultiplier * 0.9);
         if (this._intervalId) {
           clearInterval(this._intervalId);
-          const newInterval = Math.max(2000, HFT_CONFIG.SCAN_INTERVAL * this.tempScanMultiplier);
+          const newInterval = Math.max(5000, HFT_CONFIG.SCAN_INTERVAL * this.tempScanMultiplier);
           this._intervalId = setInterval(() => this._scan(), newInterval);
           logger.info(`⚡ HFT aumentou scan para ${newInterval}ms`, { service: "HFT" });
         }
         break;
         
       case "REDUZIR_RISCO":
-      case "REDUZIR_TAMANHO_POSICAO_E_AGUARDAR_CONFIRMACAO":
-        this.tempRiskMultiplier = Math.max(0.5, this.tempRiskMultiplier * 0.7);
+        this.tempRiskMultiplier = Math.max(0.6, this.tempRiskMultiplier * 0.85);
         logger.info(`📉 HFT reduziu risco: riskMultiplier=${this.tempRiskMultiplier}x`, { service: "HFT" });
         break;
         
@@ -278,11 +281,11 @@ class HFTService {
         type: "performance_update",
         content: `HFT com ${winRate.toFixed(0)}% de acerto nos últimos ${recentTrades.length} trades`,
         confidence: Math.min(0.95, winRate / 100),
-        priority: winRate > 65 ? "high" : winRate < 40 ? "high" : "normal",
+        priority: winRate > 55 ? "high" : "normal",
         data: {
           winRate: winRate,
           totalTrades: recentTrades.length,
-          avgProfit: recentTrades.filter(t => t.pnl > 0).reduce((s, t) => s + t.pnl, 0) / (wins || 1),
+          consecutiveLosses: this.consecutiveLosses,
           tempRiskMultiplier: this.tempRiskMultiplier
         }
       };
@@ -312,10 +315,7 @@ class HFTService {
   }
   
   async sendDailyProfitToTrend() {
-    if (this.dailyProfitToSend <= 0) {
-      logger.info(`📊 Nenhum lucro diário para enviar ao Trend ($${this.dailyProfitToSend})`, { service: "HFT" });
-      return;
-    }
+    if (this.dailyProfitToSend <= 0) return;
     
     const amount = this.dailyProfitToSend;
     logger.info(`🔄 HFT enviando lucro diário de $${amount} para o Trend`, { service: "HFT" });
@@ -356,7 +356,8 @@ class HFTService {
     }
     
     this.running = true;
-    const effectiveInterval = Math.max(2000, HFT_CONFIG.SCAN_INTERVAL * this.tempScanMultiplier);
+    this.consecutiveLosses = 0; // Reset perdas ao iniciar
+    const effectiveInterval = Math.max(5000, HFT_CONFIG.SCAN_INTERVAL * this.tempScanMultiplier);
     this._intervalId = setInterval(() => this._scan(), effectiveInterval);
     this.scheduleDailyTransfer();
     
@@ -396,7 +397,8 @@ class HFTService {
       dailyProfitToSend: Math.round(this.dailyProfitToSend * 100) / 100,
       capitalAvailable: this.capitalAllocated,
       tempRiskMultiplier: this.tempRiskMultiplier,
-      tempScanMultiplier: this.tempScanMultiplier
+      tempScanMultiplier: this.tempScanMultiplier,
+      consecutiveLosses: this.consecutiveLosses
     };
   }
   
@@ -416,6 +418,7 @@ class HFTService {
       dailyLoss: this.dailyLoss,
       dailyProfitToSend: this.dailyProfitToSend,
       capital: this.capitalAllocated,
+      consecutiveLosses: this.consecutiveLosses
     };
   }
   
@@ -452,19 +455,15 @@ class HFTService {
     const high24h = Math.max(...prices);
     const low24h = Math.min(...prices);
     
-    // VWAP simplificado
     const typicalPrices = history.map(h => (h.price + (h.bid || h.price) + (h.ask || h.price)) / 3);
     const vwap = typicalPrices.reduce((a, b) => a + b, 0) / typicalPrices.length;
-    
-    // Bid/Ask ratio
     const lastBid = history[history.length - 1]?.bid || currentPrice * 0.999;
     const lastAsk = history[history.length - 1]?.ask || currentPrice * 1.001;
     const bidAskRatio = lastBid / lastAsk;
     
     return { 
       currentPrice, avgPrice, change5m, volatility, high24h, low24h, 
-      vwap, bidAskRatio,
-      bid: lastBid, ask: lastAsk
+      vwap, bidAskRatio, bid: lastBid, ask: lastAsk
     };
   }
   
@@ -537,7 +536,7 @@ class HFTService {
     const confidenceMultiplier = 0.5 + (confidence / 100);
     qty = qty * confidenceMultiplier;
     
-    const maxQty = (totalEquity * 0.05) / price;
+    const maxQty = (totalEquity * 0.03) / price;
     if (qty > maxQty) qty = maxQty;
     
     let minQty = 0;
@@ -551,6 +550,12 @@ class HFTService {
   }
   
   async _executeTrade(signal, symbol, price, confidence) {
+    // 🔥 VERIFICA SE JÁ PERDEU MUITAS SEGUIDAS
+    if (this.consecutiveLosses >= this.maxConsecutiveLosses) {
+      logger.warn(`⛔ HFT com ${this.consecutiveLosses} perdas consecutivas. Pausando execução.`, { service: "HFT" });
+      return null;
+    }
+    
     const qty = this._calculatePositionSize(symbol, price, confidence);
     if (qty <= 0) return null;
     
@@ -568,7 +573,6 @@ class HFTService {
     const takeProfitPrice = signal === "BUY" ? price * (1 + effectiveTakeProfit) : price * (1 - effectiveTakeProfit);
     
     try {
-      // 🔥 RESERVA O CAPITAL
       const capitalRequest = await this.requestCapital(estimatedCost, `Trade: ${signal} ${symbol}`);
       
       if (!capitalRequest.success) {
@@ -576,7 +580,6 @@ class HFTService {
         return null;
       }
       
-      // EXECUTA A ORDEM (NÃO RESERVA NOVAMENTE)
       const order = await exchange.placeOrder(symbol, signal, qty, price, this.agentId);
       
       const trade = {
@@ -641,23 +644,38 @@ class HFTService {
           this.dailyProfit += trade.pnl;
           this.dailyProfitToSend += trade.pnl;
           
+          // 🔥 RESETA CONTADOR DE PERDAS QUANDO GANHA
+          this.consecutiveLosses = 0;
+          
           eventBus.emit("agent:profit", {
             agentId: this.agentId,
             amount: trade.pnl,
             tradeId: trade.id
           });
           
-          logger.info(`[HFT] Lucro: $${trade.pnl} (acumulado para Trend: $${this.dailyProfitToSend})`, { service: "HFT" });
+          logger.info(`[HFT] 🎉 LUCRO: $${trade.pnl} (${trade.pnlPct}%) - Perdas resetadas!`, { service: "HFT" });
         } else {
           this.dailyLoss += Math.abs(trade.pnl);
+          this.consecutiveLosses++;
+          
           eventBus.emit("trade:closed", {
             agent: this.agentId,
             loss: Math.abs(trade.pnl),
             id: trade.id
           });
+          
+          logger.warn(`[HFT] 😞 PERDA: $${Math.abs(trade.pnl)} (${trade.pnlPct}%) - ${this.consecutiveLosses} perda(s) consecutiva(s)`, { service: "HFT" });
+          
+          // 🔥 PARA DE OPERAR APÓS MUITAS PERDAS
+          if (this.consecutiveLosses >= this.maxConsecutiveLosses) {
+            logger.error(`🚨 HFT: ${this.consecutiveLosses} perdas consecutivas! Pausando novos trades por 5 minutos.`, { service: "HFT" });
+            setTimeout(() => {
+              this.consecutiveLosses = 0;
+              logger.info(`🔄 HFT: Reset de perdas. Retomando operações.`, { service: "HFT" });
+            }, 300000); // 5 minutos
+          }
         }
         
-        // ✅ DEVOLVE TODO O CAPITAL (investido + lucro/prejuízo)
         const totalReturn = trade.estimatedCost + (trade.pnl || 0);
         if (totalReturn !== 0) {
           this.returnCapital(totalReturn, `Trade closed: ${trade.result}`);
@@ -673,7 +691,6 @@ class HFTService {
         if (db.addHFTTrade) db.addHFTTrade(trade);
         
         eventBus.emit("hft:trade", { action: "CLOSE", trade });
-        logger.info(`[HFT] Trade closed (${hitTP ? "TP" : "SL"}): ${trade.symbol} PnL: $${trade.pnl} (${trade.pnlPct}%)`, { service: "HFT" });
         
         this.shareLearning();
       }
@@ -687,6 +704,11 @@ class HFTService {
     
     if (this.capitalAllocated <= 0) return;
     
+    // 🔥 NÃO ESCANEIA SE TIVER MUITAS PERDAS SEGUIDAS
+    if (this.consecutiveLosses >= this.maxConsecutiveLosses) {
+      return;
+    }
+    
     for (const symbol of HFT_CONFIG.SYMBOLS) {
       if (!this._checkRateLimits(symbol)) continue;
       
@@ -699,7 +721,6 @@ class HFTService {
       const hasOpenTrade = this.activeTrades.some(t => t.symbol === symbol);
       if (hasOpenTrade) continue;
       
-      // 🔥 EMITE SINAL PRÓPRIO PARA O TRADEEXECUTOR
       const reasoning = `${signal.strategy} detectou oportunidade: ${signal.signal === "BUY" ? "compra" : "venda"} com ${signal.confidence}% confiança`;
       this._emitOwnSignal(signal.signal, symbol, signal.confidence, signal.strategy, reasoning);
     }
@@ -726,6 +747,7 @@ class HFTService {
     this.dailyProfitToSend = 0;
     this.tradesPerHour = {};
     this.tradeHistory = [];
+    this.consecutiveLosses = 0;
     logger.info("[HFT] Daily counters reset", { service: "HFT" });
     return { success: true };
   }
