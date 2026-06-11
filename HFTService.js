@@ -9,13 +9,21 @@ const capitalDistributor = require("./CapitalDistributorService");
 // ─── CONFIGURAÇÕES DO HFT (CORRIGIDAS) ────────────────────────────────────────
 const HFT_CONFIG = {
   SYMBOLS: ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"],
-  MAX_POSITION_SIZE: 0.01,            // REDUZIDO: 2% → 1% do capital por trade
-  STOP_LOSS: 0.01,                    // AUMENTADO: 0.3% → 1% stop loss
-  TAKE_PROFIT: 0.02,                  // AUMENTADO: 0.6% → 2% take profit
-  MIN_CONFIDENCE: 55,                 // AUMENTADO: 50 → 55
-  MAX_TRADES_PER_HOUR: 8,             // REDUZIDO: 20 → 8
-  COOLDOWN_SECONDS: 60,               // AUMENTADO: 30 → 60 segundos
-  SCAN_INTERVAL: 10000,               // AUMENTADO: 5 → 10 segundos
+  MAX_POSITION_SIZE: 0.01,
+  STOP_LOSS: 0.01,
+  TAKE_PROFIT: 0.02,
+  MIN_CONFIDENCE: 55,
+  MAX_TRADES_PER_HOUR: 8,
+  COOLDOWN_SECONDS: 60,
+  SCAN_INTERVAL: 10000,
+  // 🔥 CONFIGURAÇÕES QUE PODEM SER AJUSTADAS PELO APRENDIZADO
+  ADAPTIVE: {
+    stopLossMultiplier: 1.0,
+    takeProfitMultiplier: 1.0,
+    confidenceAdjustment: 0,
+    lastAdjustment: null,
+    learningHistory: []
+  }
 };
 
 // ─── ESTRATÉGIAS HFT ─────────────────────────────────────────────────────────
@@ -73,7 +81,8 @@ class HFTService {
     
     // 🔥 CONTROLE DE PERDAS CONSECUTIVAS
     this.consecutiveLosses = 0;
-    this.maxConsecutiveLosses = 5; // Para após 5 perdas seguidas
+    this.maxConsecutiveLosses = 5;
+    this.isLearningMode = false;
     
     // Integração com Capital Distributor
     this.agentId = "hft";
@@ -85,9 +94,9 @@ class HFTService {
     this.tempScanMultiplier = 1.0;
     this.tempRiskMultiplier = 1.0;
     
-    // Controle de sinais emitidos (evita spam)
+    // Controle de sinais emitidos
     this.lastSignalEmitted = {};
-    this.signalCooldown = 120000; // 2 minutos entre sinais do mesmo símbolo
+    this.signalCooldown = 120000;
     
     // Inicializa histórico de preços
     HFT_CONFIG.SYMBOLS.forEach(sym => {
@@ -133,7 +142,179 @@ class HFTService {
       this.applyImprovement(improvement);
     });
     
-    logger.info("HFTService initialized - Configurações corrigidas", { service: "HFT" });
+    logger.info("HFTService initialized - Com sistema de aprendizado", { service: "HFT" });
+  }
+  
+  // 🔥🔥🔥 NOVO: ANALISA PADRÃO DAS PERDAS 🔥🔥🔥
+  _analyzeLossPattern() {
+    // Pega as últimas 5 perdas
+    const lastLosses = this.tradeHistory.filter(t => t.pnl < 0).slice(0, 5);
+    
+    if (lastLosses.length < 3) return null;
+    
+    let stopLossHits = 0;
+    let takeProfitTooHigh = 0;
+    let wrongDirection = 0;
+    let avgLossSize = 0;
+    
+    for (const loss of lastLosses) {
+      avgLossSize += Math.abs(loss.pnlPct);
+      
+      // Verifica se perdeu por Stop Loss (preço bateu no SL)
+      if (loss.exitPrice && loss.stopLoss) {
+        const hitByStopLoss = loss.side === "BUY" 
+          ? loss.exitPrice <= loss.stopLoss 
+          : loss.exitPrice >= loss.stopLoss;
+        
+        if (hitByStopLoss) stopLossHits++;
+      }
+      
+      // Verifica se a direção estava errada
+      const priceChange = loss.exitPrice && loss.entryPrice 
+        ? ((loss.exitPrice - loss.entryPrice) / loss.entryPrice) * 100
+        : 0;
+      
+      if ((loss.side === "BUY" && priceChange < 0) || (loss.side === "SELL" && priceChange > 0)) {
+        wrongDirection++;
+      }
+    }
+    
+    avgLossSize = avgLossSize / lastLosses.length;
+    
+    return {
+      stopLossHits,
+      wrongDirection,
+      avgLossSize,
+      totalLosses: lastLosses.length
+    };
+  }
+  
+  // 🔥🔥🔥 NOVO: APRENDE COM OS ERROS E AJUSTA ESTRATÉGIA 🔥🔥🔥
+  async _learnFromLosses() {
+    const analysis = this._analyzeLossPattern();
+    
+    if (!analysis || analysis.totalLosses < 3) return;
+    
+    logger.info(`📚 HFT ANALISANDO ${analysis.totalLosses} PERDAS CONSECUTIVAS:`, { service: "HFT" });
+    logger.info(`   - Stop Loss hits: ${analysis.stopLossHits}/${analysis.totalLosses}`, { service: "HFT" });
+    logger.info(`   - Wrong direction: ${analysis.wrongDirection}/${analysis.totalLosses}`, { service: "HFT" });
+    logger.info(`   - Avg loss size: ${analysis.avgLossSize.toFixed(2)}%`, { service: "HFT" });
+    
+    let adjustments = [];
+    
+    // 1. Se perdeu muito por Stop Loss → STOP MUITO APERTADO
+    if (analysis.stopLossHits >= 3) {
+      const oldStopLoss = HFT_CONFIG.STOP_LOSS;
+      HFT_CONFIG.STOP_LOSS = Math.min(2.5, HFT_CONFIG.STOP_LOSS * 1.3);
+      adjustments.push(`Stop Loss: ${oldStopLoss}% → ${HFT_CONFIG.STOP_LOSS}%`);
+      logger.info(`📈 HFT aprendeu: Stop Loss muito apertado! Aumentou para ${HFT_CONFIG.STOP_LOSS}%`, { service: "HFT" });
+    }
+    
+    // 2. Se perdeu por direção errada → CONFIANÇA MÍNIMA MAIS ALTA
+    if (analysis.wrongDirection >= 3) {
+      const oldMinConf = HFT_CONFIG.MIN_CONFIDENCE;
+      HFT_CONFIG.MIN_CONFIDENCE = Math.min(75, HFT_CONFIG.MIN_CONFIDENCE + 8);
+      adjustments.push(`Confiança mínima: ${oldMinConf}% → ${HFT_CONFIG.MIN_CONFIDENCE}%`);
+      logger.info(`📈 HFT aprendeu: Direção errada! Aumentou confiança mínima para ${HFT_CONFIG.MIN_CONFIDENCE}%`, { service: "HFT" });
+    }
+    
+    // 3. Perdas muito grandes → TAKE PROFIT MUITO ALTO
+    if (analysis.avgLossSize > 1.5) {
+      const oldTakeProfit = HFT_CONFIG.TAKE_PROFIT;
+      HFT_CONFIG.TAKE_PROFIT = Math.max(1.0, HFT_CONFIG.TAKE_PROFIT * 0.85);
+      adjustments.push(`Take Profit: ${oldTakeProfit}% → ${HFT_CONFIG.TAKE_PROFIT}%`);
+      logger.info(`📈 HFT aprendeu: Perdas grandes! Reduziu Take Profit para ${HFT_CONFIG.TAKE_PROFIT}%`, { service: "HFT" });
+    }
+    
+    // 4. Se ainda está perdendo muito, reduz tamanho da posição
+    if (analysis.stopLossHits >= 2 && analysis.wrongDirection >= 2) {
+      const oldMaxSize = HFT_CONFIG.MAX_POSITION_SIZE;
+      HFT_CONFIG.MAX_POSITION_SIZE = Math.max(0.005, HFT_CONFIG.MAX_POSITION_SIZE * 0.7);
+      adjustments.push(`Tamanho máximo: ${oldMaxSize * 100}% → ${HFT_CONFIG.MAX_POSITION_SIZE * 100}%`);
+      logger.info(`📉 HFT aprendeu: Reduzindo tamanho da posição para ${HFT_CONFIG.MAX_POSITION_SIZE * 100}% do capital`, { service: "HFT" });
+    }
+    
+    // 🔥 SALVA HISTÓRICO DE APRENDIZADO
+    if (adjustments.length > 0) {
+      HFT_CONFIG.ADAPTIVE.learningHistory.unshift({
+        timestamp: Date.now(),
+        adjustments: adjustments,
+        consecutiveLosses: this.consecutiveLosses,
+        analysis: analysis
+      });
+      
+      // Mantém só últimos 20 aprendizados
+      if (HFT_CONFIG.ADAPTIVE.learningHistory.length > 20) {
+        HFT_CONFIG.ADAPTIVE.learningHistory.pop();
+      }
+      
+      // COMPARTILHA APRENDIZADO COM O LEARNING BRAIN
+      this._shareLearningWithBrain(adjustments, analysis);
+    }
+  }
+  
+  // 🔥🔥🔥 NOVO: COMPARTILHA APRENDIZADO COM O CÉREBRO 🔥🔥🔥
+  _shareLearningWithBrain(adjustments, analysis) {
+    const learning = {
+      type: "performance_analysis",
+      content: `HFT aprendeu com ${analysis.totalLosses} perdas: ${adjustments.join(", ")}`,
+      confidence: 0.8,
+      priority: "high",
+      data: {
+        adjustments: adjustments,
+        stopLossHits: analysis.stopLossHits,
+        wrongDirection: analysis.wrongDirection,
+        avgLossSize: analysis.avgLossSize,
+        newConfig: {
+          stopLoss: HFT_CONFIG.STOP_LOSS,
+          takeProfit: HFT_CONFIG.TAKE_PROFIT,
+          minConfidence: HFT_CONFIG.MIN_CONFIDENCE,
+          maxPositionSize: HFT_CONFIG.MAX_POSITION_SIZE
+        }
+      }
+    };
+    
+    eventBus.emit(`learning:${this.agentId}`, learning);
+    logger.info(`📤 HFT compartilhou aprendizado com o Learning Brain`, { service: "HFT" });
+  }
+  
+  // 🔥🔥🔥 NOVO: RESETA PARA CONFIGURAÇÕES PADRÃO 🔥🔥🔥
+  _resetToDefaultConfig() {
+    logger.info(`🔄 HFT resetando para configurações padrão`, { service: "HFT" });
+    
+    HFT_CONFIG.STOP_LOSS = 0.01;
+    HFT_CONFIG.TAKE_PROFIT = 0.02;
+    HFT_CONFIG.MIN_CONFIDENCE = 55;
+    HFT_CONFIG.MAX_POSITION_SIZE = 0.01;
+    HFT_CONFIG.ADAPTIVE.stopLossMultiplier = 1.0;
+    HFT_CONFIG.ADAPTIVE.takeProfitMultiplier = 1.0;
+    HFT_CONFIG.ADAPTIVE.confidenceAdjustment = 0;
+    HFT_CONFIG.ADAPTIVE.lastAdjustment = Date.now();
+    
+    this.tempRiskMultiplier = 1.0;
+    this.tempScanMultiplier = 1.0;
+    
+    logger.info(`✅ HFT resetado: Stop=${HFT_CONFIG.STOP_LOSS}%, TP=${HFT_CONFIG.TAKE_PROFIT}%, Conf=${HFT_CONFIG.MIN_CONFIDENCE}%`, { service: "HFT" });
+  }
+  
+  // 🔥 MÉTODO DE PAUSA COM APRENDIZADO (SUBSTITUI O ANTIGO)
+  async _pauseAndLearn() {
+    this.isLearningMode = true;
+    
+    logger.error(`🚨 HFT: ${this.consecutiveLosses} perdas consecutivas!`, { service: "HFT" });
+    logger.info(`🧠 HFT: Iniciando modo de APRENDIZADO por 5 minutos...`, { service: "HFT" });
+    
+    // 1. ANALISA AS PERDAS
+    await this._learnFromLosses();
+    
+    // 2. PAUSA POR 5 MINUTOS
+    await this.sleep(300000); // 5 minutos
+    
+    // 3. RESETA O CONTADOR DE PERDAS
+    this.consecutiveLosses = 0;
+    this.isLearningMode = false;
+    
+    logger.info(`🔄 HFT: Modo aprendizado finalizado. Retomando operações.`, { service: "HFT" });
   }
   
   async initialize() {
@@ -175,10 +356,11 @@ class HFTService {
     if (!signal.symbol) return;
     if (this.capitalAllocated <= 0) return;
     if (signal.agent === this.agentId) return;
+    if (this.isLearningMode) return; // 🔥 NÃO OPERA EM MODO APRENDIZADO
     
-    // 🔥 VERIFICA SE JÁ PERDEU MUITAS SEGUIDAS
     if (this.consecutiveLosses >= this.maxConsecutiveLosses) {
       logger.warn(`⛔ HFT com ${this.consecutiveLosses} perdas consecutivas. Pausando novos trades.`, { service: "HFT" });
+      this._pauseAndLearn(); // 🔥 APRENDE COM OS ERROS
       return;
     }
     
@@ -189,7 +371,7 @@ class HFTService {
     const hasOpenTrade = this.activeTrades.some(t => t.symbol === signal.symbol);
     if (hasOpenTrade) return;
     
-    const minConfidence = 55;
+    const minConfidence = HFT_CONFIG.MIN_CONFIDENCE;
     if (signal.confidence < minConfidence) return;
     
     const ticker = exchange.getTicker(signal.symbol);
@@ -204,15 +386,13 @@ class HFTService {
     const now = Date.now();
     const lastSignal = this.lastSignalEmitted[symbol] || 0;
     
-    if (now - lastSignal < this.signalCooldown) {
-      return;
-    }
-    
+    if (now - lastSignal < this.signalCooldown) return;
     if (confidence < HFT_CONFIG.MIN_CONFIDENCE) return;
+    if (this.isLearningMode) return; // 🔥 NÃO EMITE EM MODO APRENDIZADO
     
-    // 🔥 NÃO EMITE SINAL SE ESTIVER COM MUITAS PERDAS
     if (this.consecutiveLosses >= this.maxConsecutiveLosses) {
       logger.debug(`⏸️ HFT não emite sinal (${this.consecutiveLosses} perdas consecutivas)`, { service: "HFT" });
+      this._pauseAndLearn();
       return;
     }
     
@@ -286,7 +466,12 @@ class HFTService {
           winRate: winRate,
           totalTrades: recentTrades.length,
           consecutiveLosses: this.consecutiveLosses,
-          tempRiskMultiplier: this.tempRiskMultiplier
+          tempRiskMultiplier: this.tempRiskMultiplier,
+          adaptiveConfig: {
+            stopLoss: HFT_CONFIG.STOP_LOSS,
+            takeProfit: HFT_CONFIG.TAKE_PROFIT,
+            minConfidence: HFT_CONFIG.MIN_CONFIDENCE
+          }
         }
       };
       
@@ -356,12 +541,14 @@ class HFTService {
     }
     
     this.running = true;
-    this.consecutiveLosses = 0; // Reset perdas ao iniciar
+    this.consecutiveLosses = 0;
+    this.isLearningMode = false;
     const effectiveInterval = Math.max(5000, HFT_CONFIG.SCAN_INTERVAL * this.tempScanMultiplier);
     this._intervalId = setInterval(() => this._scan(), effectiveInterval);
     this.scheduleDailyTransfer();
     
     logger.info(`🚀 HFTService started com $${this.capitalAllocated} (scan: ${effectiveInterval}ms)`, { service: "HFT" });
+    logger.info(`   Configurações: Stop=${HFT_CONFIG.STOP_LOSS}%, TP=${HFT_CONFIG.TAKE_PROFIT}%, ConfMin=${HFT_CONFIG.MIN_CONFIDENCE}%`, { service: "HFT" });
     return { success: true };
   }
   
@@ -398,7 +585,15 @@ class HFTService {
       capitalAvailable: this.capitalAllocated,
       tempRiskMultiplier: this.tempRiskMultiplier,
       tempScanMultiplier: this.tempScanMultiplier,
-      consecutiveLosses: this.consecutiveLosses
+      consecutiveLosses: this.consecutiveLosses,
+      isLearningMode: this.isLearningMode,
+      adaptiveConfig: {
+        stopLoss: HFT_CONFIG.STOP_LOSS,
+        takeProfit: HFT_CONFIG.TAKE_PROFIT,
+        minConfidence: HFT_CONFIG.MIN_CONFIDENCE,
+        maxPositionSize: HFT_CONFIG.MAX_POSITION_SIZE
+      },
+      learningHistory: HFT_CONFIG.ADAPTIVE.learningHistory.slice(0, 5)
     };
   }
   
@@ -550,9 +745,9 @@ class HFTService {
   }
   
   async _executeTrade(signal, symbol, price, confidence) {
-    // 🔥 VERIFICA SE JÁ PERDEU MUITAS SEGUIDAS
     if (this.consecutiveLosses >= this.maxConsecutiveLosses) {
       logger.warn(`⛔ HFT com ${this.consecutiveLosses} perdas consecutivas. Pausando execução.`, { service: "HFT" });
+      this._pauseAndLearn();
       return null;
     }
     
@@ -644,7 +839,6 @@ class HFTService {
           this.dailyProfit += trade.pnl;
           this.dailyProfitToSend += trade.pnl;
           
-          // 🔥 RESETA CONTADOR DE PERDAS QUANDO GANHA
           this.consecutiveLosses = 0;
           
           eventBus.emit("agent:profit", {
@@ -666,13 +860,9 @@ class HFTService {
           
           logger.warn(`[HFT] 😞 PERDA: $${Math.abs(trade.pnl)} (${trade.pnlPct}%) - ${this.consecutiveLosses} perda(s) consecutiva(s)`, { service: "HFT" });
           
-          // 🔥 PARA DE OPERAR APÓS MUITAS PERDAS
+          // 🔥 SE BATER 5 PERDAS, APRENDE E RESETA
           if (this.consecutiveLosses >= this.maxConsecutiveLosses) {
-            logger.error(`🚨 HFT: ${this.consecutiveLosses} perdas consecutivas! Pausando novos trades por 5 minutos.`, { service: "HFT" });
-            setTimeout(() => {
-              this.consecutiveLosses = 0;
-              logger.info(`🔄 HFT: Reset de perdas. Retomando operações.`, { service: "HFT" });
-            }, 300000); // 5 minutos
+            this._pauseAndLearn();
           }
         }
         
@@ -699,12 +889,12 @@ class HFTService {
   
   async _scan() {
     if (!this.running) return;
+    if (this.isLearningMode) return;
     
     this._monitorTrades();
     
     if (this.capitalAllocated <= 0) return;
     
-    // 🔥 NÃO ESCANEIA SE TIVER MUITAS PERDAS SEGUIDAS
     if (this.consecutiveLosses >= this.maxConsecutiveLosses) {
       return;
     }
@@ -748,6 +938,8 @@ class HFTService {
     this.tradesPerHour = {};
     this.tradeHistory = [];
     this.consecutiveLosses = 0;
+    this.isLearningMode = false;
+    this._resetToDefaultConfig();
     logger.info("[HFT] Daily counters reset", { service: "HFT" });
     return { success: true };
   }
