@@ -21,8 +21,8 @@ class TradeExecutorService {
     this.pendingSignals = [];
     
     // 🔥 NOVO: CONTROLE DE PAUSA POR AGENTE (Consciência IA)
-    this.pausedAgents = new Set(); // Agentes pausados pela Consciência
-    this.agentPauseReasons = {};   // Motivo da pausa por agente
+    this.pausedAgents = new Set();
+    this.agentPauseReasons = {};
     
     // 🆕 HISTÓRICO DE PERFORMANCE POR AGENTE
     this.agentPerformance = {
@@ -77,8 +77,6 @@ class TradeExecutorService {
       this.pausedAgents.delete(agentId);
       delete this.agentPauseReasons[agentId];
       logger.info(`▶️ TradeExecutor: Agente ${agentId} retomado. Motivo: ${reason}`, { service: "TradeExecutor" });
-      
-      // Processa sinais pendentes para este agente
       this._processPendingSignals(agentId);
     });
     
@@ -89,26 +87,22 @@ class TradeExecutorService {
       }
     });
     
-    // 🔥 ESCUTA MELHORIAS DIRETAS PARA O TREND
     eventBus.on("improvement:trend", (improvement) => {
       this._applyImprovement(improvement);
     });
     
-    // 🆕 ESCUTA DECISÕES DO CONSELHO
     eventBus.on("council:decision", async (decision) => {
       if (decision && decision.action !== "HOLD") {
         logger.info(`🏛️ Conselho decidiu: ${decision.action} (força: ${(decision.strength*100).toFixed(0)}%)`, { service: "TradeExecutor" });
       }
     });
     
-    // 🔥 ESCUTA TENDÊNCIA DE MERCADO
     eventBus.on("market:trend", (trendData) => {
       this._marketTrend = trendData.trend;
       this._trendStrength = trendData.strength;
       logger.debug(`📊 Tendência de mercado atualizada: ${this._marketTrend} (força: ${this._trendStrength.toFixed(1)}%)`, { service: "TradeExecutor" });
     });
     
-    // 🔥 TENDÊNCIA ATUAL DO MERCADO
     this._marketTrend = "sideways";
     this._trendStrength = 0;
     
@@ -118,12 +112,10 @@ class TradeExecutorService {
       version: "v5.2.0"
     });
     
-    // 🔥🔥🔥 FORÇA O START DO TRADE EXECUTOR 🔥🔥🔥
     logger.info("🔍 DEBUG: Chamando this.start() no construtor", { service: "TradeExecutor" });
     this.start();
   }
 
-  // 🔥 APLICA MELHORIAS DO LEARNING BRAIN
   _applyImprovement(improvement) {
     if (!improvement) return;
     
@@ -161,7 +153,6 @@ class TradeExecutorService {
     }, 3600000);
   }
 
-  // 🔥 VERIFICA SE UM AGENTE ESTÁ PAUSADO
   _isAgentPaused(agentId) {
     return this.pausedAgents.has(agentId);
   }
@@ -181,11 +172,9 @@ class TradeExecutorService {
     
     const agent = signal.agent || this._getAgentFromStrategy(signal.strategy);
     
-    // 🔥🔥🔥 VERIFICA SE O AGENTE ESTÁ PAUSADO PELA CONSCIÊNCIA 🔥🔥🔥
     if (this._isAgentPaused(agent)) {
       logger.warn(`⏸️ Agente ${agent} está pausado pela Consciência. Motivo: ${this.agentPauseReasons[agent] || "sem capital"}`, { service: "TradeExecutor" });
       
-      // Armazena o sinal para quando o agente for retomado
       this.pendingSignals.push({
         symbol: signal.symbol,
         side: signal.type,
@@ -205,7 +194,6 @@ class TradeExecutorService {
       agent: agent
     });
     
-    // 🔥 CHAMA LEARNING BRAIN PARA PREDIZER O SINAL
     let prediction = null;
     if (learningBrain && learningBrain.predictSignal) {
       try {
@@ -321,7 +309,6 @@ class TradeExecutorService {
       return { success: false, reason: "Trading paused" };
     }
     
-    // 🔥 VERIFICA NOVAMENTE SE O AGENTE ESTÁ PAUSADO
     if (this._isAgentPaused(agent)) {
       logger.warn(`⏸️ executeTrade: Agente ${agent} está pausado. Ignorando trade.`, { service: "TradeExecutor" });
       return { success: false, reason: "AGENT_PAUSED_BY_CONSCIOUSNESS" };
@@ -333,10 +320,8 @@ class TradeExecutorService {
       return { success: false, reason: "No ticker data" };
     }
 
-    // 🔥 VERIFICA TENDÊNCIA DE MERCADO ANTES DE EXECUTAR
     const marketTrend = exchange.getMarketTrend ? exchange.getMarketTrend() : { trend: "sideways", strength: 0 };
     
-    // Não opera contra a tendência principal
     if (marketTrend.trend === "bullish" && side === "SELL") {
       logger.warn(`⏸️ Pulando SELL em ${symbol} - Mercado em BULLISH (força: ${marketTrend.strength.toFixed(1)}%)`, { service: "TradeExecutor" });
       return { success: false, reason: "Contra-tendência (bullish market)" };
@@ -347,7 +332,6 @@ class TradeExecutorService {
       return { success: false, reason: "Contra-tendência (bearish market)" };
     }
     
-    // Em mercado lateral, reduz posição pela metade
     let trendMultiplier = 1.0;
     if (marketTrend.trend === "sideways") {
       trendMultiplier = 0.5;
@@ -360,7 +344,6 @@ class TradeExecutorService {
     let adjustedConfidence = confidence;
     let sizeMultiplier = 1.0;
     
-    // Aplica ajustes do Learning Brain
     if (this.tempSizeMultiplier) {
       sizeMultiplier = sizeMultiplier * this.tempSizeMultiplier;
     }
@@ -368,7 +351,6 @@ class TradeExecutorService {
       adjustedConfidence = Math.min(98, adjustedConfidence + this.baseConfidenceBoost);
     }
     
-    // Aplica multiplicador de tendência
     sizeMultiplier = sizeMultiplier * trendMultiplier;
     
     if (performance.consecutiveWins >= 3) {
@@ -386,11 +368,9 @@ class TradeExecutorService {
       }
     }
     
-    // 🔥 CORREÇÃO: NÃO duplica o multiplicador!
     const positionInfo = risk.calculatePositionSize(symbol, ticker.price, cfg.stopLoss, agent, adjustedConfidence);
     let finalQty = positionInfo.qty;
     
-    // Aplica multiplicador de tamanho (apenas se necessário)
     if (sizeMultiplier !== 1.0 && finalQty > 0) {
       finalQty = finalQty * sizeMultiplier;
       logger.info(`📊 Aplicando multiplicador: ${sizeMultiplier}x -> ${finalQty.toFixed(6)} ${symbol}`, { service: "TradeExecutor" });
@@ -425,7 +405,6 @@ class TradeExecutorService {
         logger.info(`🎯 Stop loss aumentado para ${stopLossPercent}% (sequência de prejuízos)`, { service: "TradeExecutor" });
       }
       
-      // Ajusta stop loss baseado na tendência
       if (marketTrend.trend === "bullish" && side === "BUY") {
         stopLossPercent = stopLossPercent * 0.8;
       } else if (marketTrend.trend === "bearish" && side === "SELL") {
@@ -605,8 +584,12 @@ class TradeExecutorService {
     return perf;
   }
 
+  // 🔥 CORREÇÃO: MONITORAMENTO DE TRADES COM PNL CORRIGIDO E LIMITE
   _monitorOpenTrades() {
     logger.info("🔍 DEBUG: _monitorOpenTrades iniciado", { service: "TradeExecutor" });
+    
+    const MAX_PNL_PER_TRADE = 10000; // Máximo $10.000 por trade
+    
     setInterval(() => {
       if (!this.running) return;
       
@@ -618,13 +601,32 @@ class TradeExecutorService {
         
         const currentPrice = ticker.price;
         const side = trade.side;
-        const pnlPct = side === "BUY"
-          ? ((currentPrice - trade.entryPrice) / trade.entryPrice) * 100
-          : ((trade.entryPrice - currentPrice) / trade.entryPrice) * 100;
-        const pnl = (pnlPct / 100) * trade.entryPrice * trade.qty;
+        
+        // 🔥 CÁLCULO CORRETO DO PNL
+        let pnlPct = 0;
+        if (side === "BUY") {
+          pnlPct = ((currentPrice - trade.entryPrice) / trade.entryPrice) * 100;
+        } else {
+          pnlPct = ((trade.entryPrice - currentPrice) / trade.entryPrice) * 100;
+        }
+        
+        // 🔥 Usar o valor investido (estimatedCost) para calcular PnL
+        let pnl = trade.estimatedCost * (pnlPct / 100);
+        
+        // 🔥 LIMITE MÁXIMO para evitar números absurdos
+        if (Math.abs(pnl) > MAX_PNL_PER_TRADE) {
+          logger.error(`🚨 PnL EXCESSIVO detectado em ${trade.symbol}! Original: $${pnl.toFixed(2)}, Limitando para $${MAX_PNL_PER_TRADE}`);
+          pnl = pnl > 0 ? MAX_PNL_PER_TRADE : -MAX_PNL_PER_TRADE;
+          pnlPct = (pnl / trade.estimatedCost) * 100;
+        }
         
         trade.pnl = Math.round(pnl * 100) / 100;
         trade.pnlPct = Math.round(pnlPct * 100) / 100;
+        
+        // 🔥 LOG DE DEBUG para valores altos
+        if (Math.abs(trade.pnl) > 5000) {
+          logger.warn(`⚠️ PnL ALTO: ${trade.symbol} PnL=$${trade.pnl} (${trade.pnlPct}%), entry=$${trade.entryPrice}, current=$${currentPrice}, qty=${trade.qty}, estimatedCost=$${trade.estimatedCost}`, { service: "TradeExecutor" });
+        }
         
         const hitSL = side === "BUY" 
           ? currentPrice <= trade.stopLoss 
@@ -684,7 +686,7 @@ class TradeExecutorService {
             logger.warn(`❌ LOSS: ${trade.symbol} $${trade.pnl.toFixed(2)} (${trade.pnlPct.toFixed(2)}%) - ${trade.agent}`, { service: "TradeExecutor" });
           }
           
-          // ✅ CORRETO - devolve TODO o capital (investido + lucro/prejuízo)
+          // Devolve TODO o capital (investido + lucro/prejuízo)
           const totalReturn = trade.estimatedCost + trade.pnl;
           if (totalReturn !== 0) {
             this._returnCapital(trade.agent, totalReturn, `Trade closed: ${trade.result}`);
@@ -749,7 +751,7 @@ class TradeExecutorService {
       },
       byAgent: this._getStatsByAgent(allClosedTrades),
       agentPerformance: this.agentPerformance,
-      pausedAgents: Array.from(this.pausedAgents)  // 🔥 NOVO: retorna agentes pausados
+      pausedAgents: Array.from(this.pausedAgents)
     };
   }
   
@@ -796,12 +798,10 @@ class TradeExecutorService {
     return this.agentPerformance[agent] || { consecutiveWins: 0, consecutiveLosses: 0, lastResult: null };
   }
   
-  // 🔥 NOVO: Verifica se um agente está pausado
   isAgentPaused(agentId) {
     return this.pausedAgents.has(agentId);
   }
   
-  // 🔥 NOVO: Retorna todos os agentes pausados
   getPausedAgents() {
     return Array.from(this.pausedAgents);
   }
