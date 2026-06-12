@@ -8,21 +8,37 @@ class RiskManagementService {
     this.paused = false;
     this.pausedSymbols = new Set();
     
-    // 🔥 CONFIGURAÇÕES POR AGENTE - AJUSTADAS PARA MAIS AGRESSIVIDADE
+    // 🔥 CONFIGURAÇÕES POR AGENTE - CORRIGIDAS
     this.agentConfigs = {
-      trend: { maxCapitalUsage: 0.80, maxPositionPct: 0.30, minConfidence: 50 },   // Aumentado: 70%→80%, 20%→30%
-      hft: { maxCapitalUsage: 0.60, maxPositionPct: 0.15, minConfidence: 55 },     // Aumentado
-      arbitrage: { maxCapitalUsage: 0.70, maxPositionPct: 0.20, minConfidence: 60 }, // Aumentado
+      trend: { maxCapitalUsage: 0.60, maxPositionPct: 0.05, minConfidence: 55 },   // REDUZIDO: 30%→5%, 80%→60%
+      hft: { maxCapitalUsage: 0.60, maxPositionPct: 0.15, minConfidence: 55 },
+      arbitrage: { maxCapitalUsage: 0.70, maxPositionPct: 0.20, minConfidence: 60 },
       sentiment: { maxCapitalUsage: 0.40, maxPositionPct: 0.10, minConfidence: 50 },
       deep: { maxCapitalUsage: 0.50, maxPositionPct: 0.15, minConfidence: 55 }
     };
     
-    logger.info("RiskManagementService initialized (integrado com CapitalDistributor)", { service: "RiskManagement" });
+    // 🔥 LIMITES GLOBAIS
+    this.globalLimits = {
+      maxPositionUSD: 5000,      // Máximo $5.000 por trade
+      maxCapitalConsidered: 100000, // Máximo de capital considerado para cálculos
+      maxDailyLoss: 10000,        // Perda máxima diária
+      maxDrawdown: 20             // Drawdown máximo permitido (%)
+    };
+    
+    logger.info("RiskManagementService initialized - COM LIMITES PARA TREND", { service: "RiskManagement" });
   }
 
   getAgentCapital(agentId) {
     const agentInfo = capitalDistributor.getAgentInfo(agentId);
-    return agentInfo ? agentInfo.balance : 0;
+    let balance = agentInfo ? agentInfo.balance : 0;
+    
+    // 🔥 LIMITE MÁXIMO DE CAPITAL RETORNADO
+    if (balance > this.globalLimits.maxCapitalConsidered) {
+      logger.warn(`[RiskManagement] Capital do ${agentId} ($${balance}) excede limite. Usando $${this.globalLimits.maxCapitalConsidered}`);
+      balance = this.globalLimits.maxCapitalConsidered;
+    }
+    
+    return balance;
   }
 
   getAgentInvested(agentId) {
@@ -42,7 +58,13 @@ class RiskManagementService {
 
   validateTrade(symbol, side, notionalValue, agentId = "trend") {
     const cfg = db.getConfig();
-    const agentCapital = this.getAgentCapital(agentId);
+    let agentCapital = this.getAgentCapital(agentId);
+    
+    // 🔥 LIMITA CAPITAL PARA VALIDAÇÃO
+    if (agentCapital > this.globalLimits.maxCapitalConsidered) {
+      agentCapital = this.globalLimits.maxCapitalConsidered;
+    }
+    
     const agentConfig = this.agentConfigs[agentId] || this.agentConfigs.trend;
     const agentInvested = this.getAgentInvested(agentId);
     
@@ -50,7 +72,6 @@ class RiskManagementService {
     const maxPositionValue = agentCapital * maxCapitalUsage;
     const availableForNew = maxPositionValue - agentInvested;
     
-    // 🔥 AUMENTADO: riskPerTrade máximo 3% (antes 2%)
     const riskPerTrade = Math.min(cfg.riskPerTrade, 3.0);
     const riskDollar = agentCapital * (riskPerTrade / 100);
     
@@ -59,16 +80,19 @@ class RiskManagementService {
     if (this.paused) errors.push("Engine is paused");
     if (this.pausedSymbols.has(symbol)) errors.push(`${symbol} is paused (Flash Crash Shield)`);
     
+    // 🔥 LIMITE ESPECÍFICO PARA TREND
+    if (agentId === "trend" && notionalValue > this.globalLimits.maxPositionUSD) {
+      errors.push(`Trend position limited to $${this.globalLimits.maxPositionUSD}. Requested: $${notionalValue.toFixed(2)}`);
+    }
+    
     if (notionalValue > availableForNew && availableForNew > 0) {
       errors.push(`Capital limit for ${agentId}. Max new position: $${availableForNew.toFixed(2)}`);
     }
     
-    // 🔥 AUMENTADO: posição pode ser até 20x o risco (antes 10x)
     if (notionalValue > riskDollar * 20) {
       errors.push(`Position size too large for ${agentId}. Max: $${(riskDollar * 20).toFixed(2)}`);
     }
     
-    // ✅ CORRETO - passa o agentId para o getBalance
     const bal = exchange.getBalance(agentId);
     if (bal.USDT < notionalValue * 0.05) {
       errors.push("Insufficient USDT balance in exchange");
@@ -87,23 +111,27 @@ class RiskManagementService {
 
   calculatePositionSize(symbol, price, stopLossPercent, agentId = "trend", confidence = 70) {
     const cfg = db.getConfig();
-    // ✅ CORRETO - passa o agentId para o getBalance
     const bal = exchange.getBalance(agentId);
-    const agentCapital = this.getAgentCapital(agentId);
+    
+    // 🔥 LIMITA O CAPITAL PARA CÁLCULO
+    let agentCapital = this.getAgentCapital(agentId);
+    if (agentCapital > this.globalLimits.maxCapitalConsidered) {
+      agentCapital = this.globalLimits.maxCapitalConsidered;
+    }
+    
     const agentConfig = this.agentConfigs[agentId] || this.agentConfigs.trend;
     const agentInvested = this.getAgentInvested(agentId);
     
     const maxCapitalUsage = agentConfig.maxCapitalUsage;
     const maxNewPositionValue = Math.max(0, (agentCapital * maxCapitalUsage) - agentInvested);
     
-    // 🔥 AUMENTADO: riskPerTrade máximo 3% (antes 2%)
     const riskPerTrade = Math.min(cfg.riskPerTrade, 3.0);
     const riskDollar = agentCapital * (riskPerTrade / 100);
     const stopLossDollar = price * (stopLossPercent / 100);
     
     let qty = riskDollar / stopLossDollar;
     
-    const confidenceMultiplier = 0.6 + (confidence / 100); // 0.6 a 1.6 (antes 0.5 a 1.5)
+    const confidenceMultiplier = 0.6 + (confidence / 100);
     qty = qty * confidenceMultiplier;
     
     const maxQtyByCapital = maxNewPositionValue / price;
@@ -112,15 +140,26 @@ class RiskManagementService {
       logger.warn(`[RiskManagement] ${agentId}: Qty limitada pelo capital disponível: ${qty.toFixed(6)} ${symbol}`);
     }
     
-    // 🔥 AUMENTADO: maxPositionPct agora é o limite principal (30% para trend)
-    const maxPositionPct = agentConfig.maxPositionPct;
+    // 🔥 LIMITE ESPECÍFICO PARA TREND (5% do capital)
+    let maxPositionPct = agentConfig.maxPositionPct;
+    if (agentId === "trend") {
+      maxPositionPct = 0.05; // 5% máximo
+    }
+    
     const maxQtyByPct = (agentCapital * maxPositionPct) / price;
     if (qty > maxQtyByPct) {
       qty = maxQtyByPct;
       logger.warn(`[RiskManagement] ${agentId}: Qty limitada a ${maxPositionPct * 100}% do capital (${qty.toFixed(6)} ${symbol})`);
     }
     
-    // 🔥 AUMENTADO: PAPER MODE agora permite 25% do saldo (antes 10%)
+    // 🔥 LIMITE POR VALOR EM DÓLARES
+    const maxUsdPerTrade = agentId === "trend" ? 3000 : this.globalLimits.maxPositionUSD;
+    const maxQtyByUsd = maxUsdPerTrade / price;
+    if (qty > maxQtyByUsd) {
+      qty = maxQtyByUsd;
+      logger.warn(`[RiskManagement] ${agentId}: Qty limitada a $${maxUsdPerTrade} (${qty.toFixed(6)} ${symbol})`);
+    }
+    
     const isPaperMode = cfg.mode === "PAPER";
     if (isPaperMode) {
       const maxQtyPaper = (bal.USDT * 0.25) / price;
@@ -130,7 +169,6 @@ class RiskManagementService {
       }
     }
     
-    // Quantidades mínimas
     let minQty = 0;
     if (symbol.includes("BTC")) minQty = 0.0001;
     else if (symbol.includes("ETH")) minQty = 0.001;
@@ -142,11 +180,17 @@ class RiskManagementService {
       logger.warn(`[RiskManagement] Qty ajustada para mínimo (${minQty}) ${symbol}`);
     }
     
-    // 🔥 AUMENTADO: limite máximo absoluto de 40% do capital do agente (antes 20%)
-    const absoluteMax = (agentCapital * 0.40) / price;
+    // 🔥 LIMITE MÁXIMO ABSOLUTO (10% do capital, nunca mais que isso)
+    const absoluteMax = (agentCapital * 0.10) / price;
     if (qty > absoluteMax) {
       qty = absoluteMax;
-      logger.warn(`[RiskManagement] ${agentId}: Qty limitada a 40% do capital (${qty.toFixed(6)} ${symbol})`);
+      logger.warn(`[RiskManagement] ${agentId}: Qty limitada a 10% do capital (${qty.toFixed(6)} ${symbol})`);
+    }
+    
+    // 🔥 LOG PARA MONITORAMENTO
+    const estimatedCost = qty * price;
+    if (estimatedCost > 5000) {
+      logger.warn(`[RiskManagement] ⚠️ POSIÇÃO GRANDE: ${agentId} vai gastar $${estimatedCost.toFixed(2)} em ${symbol}`, { service: "RiskManagement" });
     }
     
     return { 
@@ -162,7 +206,11 @@ class RiskManagementService {
   }
 
   canOpenNewPosition(symbol, notionalValue, agentId = "trend") {
-    const agentCapital = this.getAgentCapital(agentId);
+    let agentCapital = this.getAgentCapital(agentId);
+    if (agentCapital > this.globalLimits.maxCapitalConsidered) {
+      agentCapital = this.globalLimits.maxCapitalConsidered;
+    }
+    
     const agentConfig = this.agentConfigs[agentId] || this.agentConfigs.trend;
     const agentInvested = this.getAgentInvested(agentId);
     const investedPercent = agentCapital > 0 ? (agentInvested / agentCapital) * 100 : 0;
@@ -238,7 +286,6 @@ class RiskManagementService {
   
   getStats() {
     const cfg = db.getConfig();
-    // ✅ CORRETO - passa um agentId padrão para o getBalance
     const totalEquity = exchange.getBalance("trend").USDT || 0;
     
     const agentsStats = {};
@@ -262,7 +309,8 @@ class RiskManagementService {
       takeProfit: cfg.takeProfit, 
       mode: cfg.mode,
       totalEquity: Math.round(totalEquity * 100) / 100,
-      agents: agentsStats
+      agents: agentsStats,
+      globalLimits: this.globalLimits
     };
   }
 
