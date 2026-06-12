@@ -17,10 +17,10 @@ class TradeExecutorService {
     this.openTrades = db.getTrades({ status: "OPEN" });
     this.tradeHistory = [];
     
-    // 🆕 FILA DE SINAIS PENDENTES (para quando não tem saldo)
+    // 🆕 FILA DE SINAIS PENDENTES
     this.pendingSignals = [];
     
-    // 🔥 NOVO: CONTROLE DE PAUSA POR AGENTE (Consciência IA)
+    // 🔥 NOVO: CONTROLE DE PAUSA POR AGENTE
     this.pausedAgents = new Set();
     this.agentPauseReasons = {};
     
@@ -60,13 +60,11 @@ class TradeExecutorService {
       await this.handleSignal(signal);
     });
     
-    // 🆕 ESCUTA QUANDO CAPITAL VOLTA (para processar fila)
     eventBus.on("capital:return", (capitalReturn) => {
       logger.info(`💸 Capital retornou para ${capitalReturn.agentId}: $${capitalReturn.amount}`, { service: "TradeExecutor" });
       this._processPendingSignals(capitalReturn.agentId);
     });
     
-    // 🔥🔥🔥 NOVO: ESCUTA EVENTOS DE PAUSA/RETOMADA DA CONSCIÊNCIA IA 🔥🔥🔥
     eventBus.on("agent:pause", ({ agentId, reason }) => {
       this.pausedAgents.add(agentId);
       this.agentPauseReasons[agentId] = reason;
@@ -80,7 +78,6 @@ class TradeExecutorService {
       this._processPendingSignals(agentId);
     });
     
-    // 🔥 ESCUTA APRENDIZADO COMPARTILHADO DO LEARNING BRAIN
     eventBus.on("improvement:broadcast", (improvement) => {
       if (improvement.affectedAgents?.includes("trend") || !improvement.to) {
         this._applyImprovement(improvement);
@@ -297,6 +294,229 @@ class TradeExecutorService {
 
   isPaused() { return this.paused; }
 
+  // 🔥🔥🔥 NOVO: SISTEMA DE APRENDIZADO PÓS-PERDAS 🔥🔥🔥
+  async _learnFromLosses(agent) {
+    logger.info(`📚 ${agent} entrou em MODO DE ESTUDO após ${this.agentPerformance[agent].consecutiveLosses} perdas consecutivas!`, { service: "TradeExecutor" });
+    
+    // 1. PAUSA O AGENTE
+    this.pausedAgents.add(agent);
+    this.agentPauseReasons[agent] = `Estudando mercado após ${this.agentPerformance[agent].consecutiveLosses} perdas consecutivas`;
+    
+    // 2. ANALISA AS ÚLTIMAS PERDAS
+    const lastLosses = this.tradeHistory
+      .filter(t => t.agent === agent && t.result === "LOSS")
+      .slice(0, this.agentPerformance[agent].consecutiveLosses);
+    
+    const lossAnalysis = this._analyzeLossPattern(lastLosses);
+    
+    // 3. ANALISA O MERCADO ATUAL
+    const marketAnalysis = await this._analyzeMarketCondition();
+    
+    // 4. AJUSTA ESTRATÉGIA BASEADO NA ANÁLISE
+    const adjustments = this._generateStrategyAdjustments(lossAnalysis, marketAnalysis);
+    
+    // 5. COMPARTILHA APRENDIZADO COM LEARNING BRAIN
+    this._shareLearningWithBrain(agent, lossAnalysis, marketAnalysis, adjustments);
+    
+    // 6. EMITE EVENTO
+    eventBus.emit(`learning:${agent}`, {
+      type: "post_loss_learning",
+      content: `${agent} estudando após ${this.agentPerformance[agent].consecutiveLosses} perdas. ${adjustments.summary}`,
+      confidence: 0.85,
+      priority: "high",
+      data: {
+        consecutiveLosses: this.agentPerformance[agent].consecutiveLosses,
+        lossAnalysis,
+        marketAnalysis,
+        adjustments
+      }
+    });
+    
+    // 7. TEMPO DE ESTUDO (5 minutos)
+    logger.info(`🧠 ${agent} estudando o mercado por 5 minutos...`, { service: "TradeExecutor" });
+    
+    setTimeout(async () => {
+      const newMarketAnalysis = await this._analyzeMarketCondition();
+      const marketImproved = this._isMarketAligned(newMarketAnalysis);
+      
+      if (marketImproved) {
+        this.pausedAgents.delete(agent);
+        delete this.agentPauseReasons[agent];
+        this.agentPerformance[agent].consecutiveLosses = 0;
+        
+        logger.info(`✅ ${agent} retomou operações! Mercado alinhado com a estratégia.`, { service: "TradeExecutor" });
+        
+        eventBus.emit(`learning:${agent}`, {
+          type: "resume_trading",
+          content: `${agent} retomou operações após estudo. Mercado alinhado!`,
+          confidence: 0.9,
+          priority: "high"
+        });
+      } else {
+        logger.info(`🔄 ${agent} mercado ainda não alinhado. Continuando estudo por mais 5 minutos...`, { service: "TradeExecutor" });
+        
+        setTimeout(() => {
+          this.pausedAgents.delete(agent);
+          delete this.agentPauseReasons[agent];
+          this.agentPerformance[agent].consecutiveLosses = 0;
+          logger.info(`✅ ${agent} retomou operações (tempo máximo de estudo atingido).`, { service: "TradeExecutor" });
+        }, 300000);
+      }
+    }, 300000);
+    
+    return { lossAnalysis, marketAnalysis, adjustments };
+  }
+
+  // 🔥 ANALISA PADRÃO DAS PERDAS
+  _analyzeLossPattern(losses) {
+    let stopLossHits = 0;
+    let wrongDirection = 0;
+    let avgLossPct = 0;
+    
+    for (const loss of losses) {
+      avgLossPct += Math.abs(loss.pnlPct);
+      
+      if (loss.exitPrice && loss.stopLoss) {
+        const hitByStopLoss = loss.side === "BUY" 
+          ? loss.exitPrice <= loss.stopLoss 
+          : loss.exitPrice >= loss.stopLoss;
+        
+        if (hitByStopLoss) stopLossHits++;
+      }
+      
+      const priceChange = loss.exitPrice && loss.entryPrice 
+        ? ((loss.exitPrice - loss.entryPrice) / loss.entryPrice) * 100
+        : 0;
+      
+      if ((loss.side === "BUY" && priceChange < 0) || (loss.side === "SELL" && priceChange > 0)) {
+        wrongDirection++;
+      }
+    }
+    
+    avgLossPct = avgLossPct / (losses.length || 1);
+    
+    return {
+      totalLosses: losses.length,
+      stopLossHits,
+      wrongDirection,
+      avgLossPct,
+      primaryIssue: stopLossHits > losses.length / 2 ? "STOP_LOSS_TOO_TIGHT" :
+                    wrongDirection > losses.length / 2 ? "WRONG_DIRECTION" :
+                    "MARKET_CONDITION"
+    };
+  }
+
+  // 🔥 ANALISA CONDIÇÃO ATUAL DO MERCADO
+  async _analyzeMarketCondition() {
+    try {
+      const symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT"];
+      const marketData = {};
+      
+      for (const symbol of symbols) {
+        const ticker = exchange.getTicker(symbol);
+        const marketTrend = exchange.getMarketTrend();
+        
+        marketData[symbol] = {
+          price: ticker?.price || 0,
+          trend: marketTrend?.trend || "sideways",
+          strength: marketTrend?.strength || 0,
+          volatility: ticker?.spread || 0.5,
+          volume: ticker?.volume24h || 0
+        };
+      }
+      
+      const trends = Object.values(marketData).map(m => m.trend);
+      const bullishCount = trends.filter(t => t === "bullish").length;
+      const bearishCount = trends.filter(t => t === "bearish").length;
+      const sidewaysCount = trends.filter(t => t === "sideways").length;
+      
+      let overallTrend = "sideways";
+      if (bullishCount > bearishCount && bullishCount > sidewaysCount) overallTrend = "bullish";
+      if (bearishCount > bullishCount && bearishCount > sidewaysCount) overallTrend = "bearish";
+      
+      const avgVolatility = Object.values(marketData).reduce((sum, m) => sum + m.volatility, 0) / symbols.length;
+      
+      return {
+        overallTrend,
+        volatility: avgVolatility,
+        isTrending: overallTrend !== "sideways",
+        isSideways: overallTrend === "sideways",
+        marketData
+      };
+    } catch (error) {
+      logger.error(`Erro ao analisar mercado: ${error.message}`, { service: "TradeExecutor" });
+      return { overallTrend: "sideways", volatility: 0.5, isTrending: false, isSideways: true };
+    }
+  }
+
+  // 🔥 GERA AJUSTES DE ESTRATÉGIA
+  _generateStrategyAdjustments(lossAnalysis, marketAnalysis) {
+    const adjustments = {
+      stopLossMultiplier: 1.0,
+      takeProfitMultiplier: 1.0,
+      confidenceThreshold: 0,
+      positionSizeMultiplier: 1.0,
+      summary: "",
+      actions: []
+    };
+    
+    if (lossAnalysis.primaryIssue === "STOP_LOSS_TOO_TIGHT") {
+      adjustments.stopLossMultiplier = 1.5;
+      adjustments.actions.push("Aumentar Stop Loss em 50%");
+      adjustments.summary = "Stop loss muito apertado. Aumentando tolerância.";
+    } else if (lossAnalysis.primaryIssue === "WRONG_DIRECTION") {
+      adjustments.confidenceThreshold = 10;
+      adjustments.actions.push("Aumentar confiança mínima em 10%");
+      adjustments.summary = "Direção errada. Aumentando filtro de confiança.";
+    } else {
+      adjustments.positionSizeMultiplier = 0.7;
+      adjustments.actions.push("Reduzir tamanho da posição em 30%");
+      adjustments.summary = "Mercado desfavorável. Reduzindo exposição.";
+    }
+    
+    if (marketAnalysis.isSideways) {
+      adjustments.positionSizeMultiplier *= 0.5;
+      adjustments.actions.push("Mercado lateral - reduzindo posição pela metade");
+      adjustments.summary += " Mercado lateral detectado.";
+    }
+    
+    return adjustments;
+  }
+
+  // 🔥 VERIFICA SE O MERCADO ESTÁ ALINHADO
+  _isMarketAligned(marketAnalysis) {
+    return !marketAnalysis.isSideways || marketAnalysis.volatility > 1.0;
+  }
+
+  // 🔥 COMPARTILHA APRENDIZADO COM LEARNING BRAIN
+  _shareLearningWithBrain(agent, lossAnalysis, marketAnalysis, adjustments) {
+    const insight = {
+      type: "post_loss_analysis",
+      content: `${agent} analisou ${lossAnalysis.totalLosses} perdas. Problema: ${lossAnalysis.primaryIssue}. Mercado: ${marketAnalysis.overallTrend}. Ajustes: ${adjustments.summary}`,
+      confidence: 0.85,
+      priority: "high",
+      data: {
+        agent,
+        consecutiveLosses: this.agentPerformance[agent].consecutiveLosses,
+        lossAnalysis,
+        marketAnalysis,
+        adjustments
+      }
+    };
+    
+    eventBus.emit(`learning:${agent}`, insight);
+    eventBus.emit("improvement:broadcast", {
+      to: agent,
+      from: "trade_executor",
+      type: "post_loss_learning",
+      recommendation: adjustments.summary,
+      confidence: 0.85,
+      data: adjustments
+    });
+    
+    logger.info(`📤 ${agent} compartilhou análise pós-perda com Learning Brain`, { service: "TradeExecutor" });
+  }
+
   async executeTrade({ symbol, side, strategy, confidence, agent, prediction }) {
     logger.info(`🔍 DEBUG: executeTrade chamado para ${side} ${symbol}`, { service: "TradeExecutor" });
     
@@ -362,9 +582,11 @@ class TradeExecutorService {
       adjustedConfidence = Math.max(50, adjustedConfidence - (performance.consecutiveLosses * 5));
       logger.info(`📉 ${agent} em sequência de ${performance.consecutiveLosses} prejuízos! Multiplicador: ${sizeMultiplier}x, Confiança ajustada: ${adjustedConfidence}%`, { service: "TradeExecutor" });
       
-      if (performance.consecutiveLosses >= 3) {
-        logger.warn(`⛔ ${agent} perdeu ${performance.consecutiveLosses} seguidas. Pulando este trade.`, { service: "TradeExecutor" });
-        return { success: false, reason: "CONSECUTIVE_LOSSES_BREAK" };
+      // 🔥 NOVO: SE PERDEU 3 OU MAIS, ENTRA EM MODO DE APRENDIZADO
+      if (performance.consecutiveLosses >= 3 && !this._isAgentPaused(agent)) {
+        logger.warn(`📚 ${agent} perdeu ${performance.consecutiveLosses} seguidas. Iniciando modo de estudo...`, { service: "TradeExecutor" });
+        await this._learnFromLosses(agent);
+        return { success: false, reason: "LEARNING_MODE_ACTIVATED" };
       }
     }
     
@@ -522,6 +744,9 @@ class TradeExecutorService {
         } else if (result.reason === "AGENT_PAUSED_BY_CONSCIOUSNESS") {
           this.pendingSignals.push(signal);
           logger.info(`📥 Sinal pendente recolocado na fila para ${agentId} (agente pausado)`, { service: "TradeExecutor" });
+        } else if (result.reason === "LEARNING_MODE_ACTIVATED") {
+          this.pendingSignals.push(signal);
+          logger.info(`📥 Sinal pendente recolocado na fila para ${agentId} (modo estudo ativo)`, { service: "TradeExecutor" });
         } else {
           logger.warn(`❌ Sinal pendente falhou: ${result.reason}`, { service: "TradeExecutor" });
         }
@@ -588,7 +813,7 @@ class TradeExecutorService {
   _monitorOpenTrades() {
     logger.info("🔍 DEBUG: _monitorOpenTrades iniciado", { service: "TradeExecutor" });
     
-    const MAX_PNL_PER_TRADE = 10000; // Máximo $10.000 por trade
+    const MAX_PNL_PER_TRADE = 10000;
     
     setInterval(() => {
       if (!this.running) return;
@@ -602,7 +827,6 @@ class TradeExecutorService {
         const currentPrice = ticker.price;
         const side = trade.side;
         
-        // 🔥 CÁLCULO CORRETO DO PNL
         let pnlPct = 0;
         if (side === "BUY") {
           pnlPct = ((currentPrice - trade.entryPrice) / trade.entryPrice) * 100;
@@ -610,10 +834,8 @@ class TradeExecutorService {
           pnlPct = ((trade.entryPrice - currentPrice) / trade.entryPrice) * 100;
         }
         
-        // 🔥 Usar o valor investido (estimatedCost) para calcular PnL
         let pnl = trade.estimatedCost * (pnlPct / 100);
         
-        // 🔥 LIMITE MÁXIMO para evitar números absurdos
         if (Math.abs(pnl) > MAX_PNL_PER_TRADE) {
           logger.error(`🚨 PnL EXCESSIVO detectado em ${trade.symbol}! Original: $${pnl.toFixed(2)}, Limitando para $${MAX_PNL_PER_TRADE}`);
           pnl = pnl > 0 ? MAX_PNL_PER_TRADE : -MAX_PNL_PER_TRADE;
@@ -623,7 +845,6 @@ class TradeExecutorService {
         trade.pnl = Math.round(pnl * 100) / 100;
         trade.pnlPct = Math.round(pnlPct * 100) / 100;
         
-        // 🔥 LOG DE DEBUG para valores altos
         if (Math.abs(trade.pnl) > 5000) {
           logger.warn(`⚠️ PnL ALTO: ${trade.symbol} PnL=$${trade.pnl} (${trade.pnlPct}%), entry=$${trade.entryPrice}, current=$${currentPrice}, qty=${trade.qty}, estimatedCost=$${trade.estimatedCost}`, { service: "TradeExecutor" });
         }
@@ -686,7 +907,6 @@ class TradeExecutorService {
             logger.warn(`❌ LOSS: ${trade.symbol} $${trade.pnl.toFixed(2)} (${trade.pnlPct.toFixed(2)}%) - ${trade.agent}`, { service: "TradeExecutor" });
           }
           
-          // Devolve TODO o capital (investido + lucro/prejuízo)
           const totalReturn = trade.estimatedCost + trade.pnl;
           if (totalReturn !== 0) {
             this._returnCapital(trade.agent, totalReturn, `Trade closed: ${trade.result}`);
