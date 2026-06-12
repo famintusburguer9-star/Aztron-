@@ -114,18 +114,23 @@ class CapitalDistributorService {
     }
   }
 
+  // 🔥 CORRIGIDO: NÃO DUPLICA O LUCRO NO SALDO
   collectSavings(profit) {
     const { agentId, amount, tradeId } = profit;
     const agent = this.agents.find(a => a.id === agentId);
     
     if (!agent) return;
     
+    // 🔥 CORREÇÃO: NÃO adiciona ao balance (já foi adicionado no handleReturn)
+    // Apenas registra o lucro para o cofre e estatísticas
+    
     const contribution = amount * this.savingsPercent;
     const reinvest = amount * this.reinvestPercent;
     
-    agent.balance += reinvest;
+    // 🔥 REMOVIDO: agent.balance += reinvest; - NÃO FAZER! (já foi adicionado no handleReturn)
+    
+    // Atualiza apenas estatísticas
     agent.totalPnL += amount;
-    agent.paperBalance = agent.balance;
     
     agent.trades.push({ id: tradeId, profit: amount, contribution, reinvest, timestamp: Date.now() });
     if (agent.trades.length > 100) agent.trades.shift();
@@ -142,7 +147,14 @@ class CapitalDistributorService {
     logger.info(`   Saldo ${agent.name}: $${agent.balance.toFixed(2)}`);
     logger.info(`   Cofre total: $${this.savings.balance.toFixed(2)}`);
     
-    EventBus.emit("capital:contribution", { agent: agentId, profit: amount, contribution, reinvest, savingsBalance: this.savings.balance, agentBalance: agent.balance });
+    EventBus.emit("capital:contribution", { 
+      agent: agentId, 
+      profit: amount, 
+      contribution, 
+      reinvest, 
+      savingsBalance: this.savings.balance, 
+      agentBalance: agent.balance 
+    });
     
     this.saveState();
   }
@@ -232,7 +244,6 @@ class CapitalDistributorService {
     this.saveState();
   }
 
-  // ✅ CORRIGIDO - usa storage diretamente
   loadState() {
     try {
       const saved = storage.get("capitalDistributor");
@@ -250,7 +261,6 @@ class CapitalDistributorService {
     }
   }
 
-  // ✅ CORRIGIDO - usa storage diretamente
   saveState() {
     try {
       storage.set("capitalDistributor", {
